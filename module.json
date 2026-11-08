@@ -1,0 +1,39 @@
+{
+  "id": "mist",
+  "name": "(MIST)",
+  "abbrev": "MS",
+  "version": "0.1.0",
+  "description": "Granular feedback processor — grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
+  "author": "ABLENTON",
+  "license": "MIT",
+  "dsp": "mist.so",
+  "api_version": 2,
+  "capabilities": {
+    "audio_in": true,
+    "audio_out": true,
+    "chainable": true,
+    "component_type": "audio_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "MIST",
+          "params": [
+            { "key": "size",    "label": "Size",    "type": "int",   "min": 8, "max": 500, "default": 120, "step": 1, "unit": "ms" },
+            { "key": "amount",  "label": "Amount",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.60, "step": 0.01, "unit": "%" },
+            { "key": "spike",   "label": "Spike",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.50, "step": 0.01, "unit": "%" },
+            { "key": "blur",    "label": "Blur",    "type": "float", "min": 0.0, "max": 1.0, "default": 0.15, "step": 0.01, "unit": "%" },
+            { "key": "pitch",   "label": "Pitch",   "type": "float", "min": -36.0, "max": 36.0, "default": 0.0, "step": 0.1, "unit": "st" },
+            { "key": "fb_pre",  "short_name": "FBpre",  "label": "FB Pre",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01, "unit": "%" },
+            { "key": "fb_post", "short_name": "FBpost", "label": "FB Post", "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01, "unit": "%" },
+            { "key": "mix",     "label": "Mix",     "type": "float", "min": 0.0, "max": 1.0, "default": 1.00, "step": 0.01, "unit": "%" },
+            { "key": "width",   "label": "Width",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.60, "step": 0.01, "unit": "%" },
+            { "key": "vol",     "label": "Vol",     "type": "float", "min": 0.0, "max": 1.5, "default": 0.90, "step": 0.01, "unit": "%" },
+            { "key": "freeze",  "label": "Freeze",  "type": "enum",  "options": ["off", "on"], "default": 0 },
+            { "key": "reverse", "label": "Reverse", "type": "enum",  "options": ["off", "on"], "default": 0 }
+          ],
+          "knobs": ["size", "amount", "spike", "blur", "pitch", "fb_pre", "fb_post", "mix"]
+        }
+      }
+    }
+  }
+}

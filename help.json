@@ -1,0 +1,25 @@
+{
+  "title": "(MIST) — Granular Feedback Processor",
+  "summary": "Simplos-inspired granular processor. Grains re-play the recent audio with a tight, adaptive feedback loop (the delay tracks the grain size), so the loop stays immediate and responsive instead of smearing. A pre/post feedback blend morphs a dry grain cloud into an airy spatial delay.",
+  "params": {
+    "size": "Grain length in ms. Also sets how far back the feedback loop reaches — short = tight/immediate, long = loose/spacious.",
+    "amount": "Window decay shape: 0 = sharp linear tail, 1 = smooth rounded tail.",
+    "spike": "Grain attack sharpness: low = soft/airy onset, high = sharp/percussive onset.",
+    "blur": "Random jitter on grain pitch and read position. 0 = locked/clean, high = smeared/chorused.",
+    "pitch": "Grain playback pitch in semitones, -36..+36. Feedback compounds pitch shift each pass — keep FB low when pitch is far from 0 or it spirals.",
+    "fb_pre": "Short feedback tap — feeds a tight loop back in for a thicker, denser grain texture.",
+    "fb_post": "Longer feedback tap (4x the pre tap) — feeds a looser loop back in for sustain/wash; with fb_pre it becomes a spatial-delay instrument.",
+    "mix": "Dry/wet balance.",
+    "width": "Stereo width of the grain cloud (mid/side).",
+    "vol": "Output level.",
+    "freeze": "Stop writing new input into the buffer — grains keep cycling through what's already captured (infinite hold).",
+    "reverse": "Grains read backwards through the buffer."
+  },
+  "tips": [
+    "Dry shimmer cloud: Size ~85ms, Spike ~0.6, FB Pre/Post 0, Amount ~0.45.",
+    "Sustaining bloom: Size ~200ms, Amount ~0.85, FB Post ~0.9 — thick and holds after the input stops.",
+    "Spatial delay: FB Pre ~0.25, FB Post ~0.6-0.8, Blur ~0.2, Width high — airy, echoing.",
+    "Freeze a moment: turn Freeze on while playing to hold the last captured buffer indefinitely.",
+    "Pitched feedback (+/- 7-12 st) compounds each pass — keep FB Post low (~0.2) or it runs away fast."
+  ]
+}
