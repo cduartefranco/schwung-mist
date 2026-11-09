@@ -9,7 +9,7 @@ Working name: **`(MIST)`** (granular + feedback + airy/spatial; pairs with our e
 `GRAIN` generator). Rename freely — it only touches `module.json` + catalog-cache
 ([[custom-module-naming]]).
 
-Primary target: **Ableton Move** (schwung `audio_fx`, in-place int16@48k). Secondary via the
+Primary target: **Ableton Move** (schwung `audio_fx`, in-place int16@**44.1k** — the original "48k" was wrong, fixed v0.2.4). Secondary via the
 portable core: offline Python renderer (A/B by ear), MPC Live 3 (future VST2), KICK (future).
 
 ---
@@ -263,7 +263,7 @@ most of the "hard part." **Display is 128×64, 1-bit** (`src/shared/e16_canvas.m
 - **Move:** fork-CI cloud-Docker (aarch64 cross-gcc) → `dsp.so`, deploy to
   `schwung/modules/audio_fx/mist/`, **catalog-register** (else it vanishes on reboot —
   [[beatbank-custom-patterns]]). Same pipeline that built [[eco-module]]/[[grain-module]].
-- **audio_fx ABI:** in-place int16@48k, `move_audio_fx_init_v2` (as ECO). Wrapper keeps an
+- **audio_fx ABI:** in-place int16@44.1k (host `MOVE_SAMPLE_RATE`), `move_audio_fx_init_v2` (as ECO). Wrapper keeps an
   internal float ring; converts in/out.
 
 ---
@@ -283,7 +283,11 @@ most of the "hard part." **Display is 128×64, 1-bit** (`src/shared/e16_canvas.m
   still reports no audible effect after v0.2.1's defaults + v0.2.2's UI removal; a v0.2.3
   diagnostic build (unconditional hard-mute in `v2_process`) was built and deployed to test
   whether the module is in the live audio path at all vs. a host/shim wiring gap — result not
-  yet confirmed by the user as of this writing. **This is the active blocker before P2.**
+  yet confirmed by the user as of this writing.
+  **RESOLVED 2026-11-09 — v0.2.4 confirmed working on hardware.** Root cause was routing, not
+  MIST: schwung Master FX only processes schwung's own audio unless **Global Settings → Audio →
+  Move->Schwung** + **Move Link** are on (the user plays a Move *sampler*, i.e. Move-native
+  audio). Once on, v0.2.3's hard-mute muted. v0.2.4 restored DSP + fixed SR 48k→44.1k.
 - **P2 — Mod engine + a few sources.** Add `lfo-morf`, `lfo-rrnd`, `mod-atrg`, `mod-d3` + a
   minimal fixed routing (e.g. 4 slots). Prove the matrix concept.
 - **P3 — Full matrix + canvas UI + presets.** All 10 modulators, free routing page, preset
@@ -360,3 +364,78 @@ high-value changes. The rest (split jitter knobs, window morph redesign, pitch e
 for the P2 mod-matrix work, since they either need new UI surface or are bigger DSP changes
 that deserve their own offline-reference validation pass first.
 ```
+
+---
+
+## 13. P2 plan — modulators + per-grain pitch (written 2026-11-09)
+
+Source of truth for names/behaviour: §7 (Simplos UI) + §12 / the 2026-11-09 second Stranular
+pass — `atrg` = threshold/return/scale (4 slots); `morf` = hz, hz-random, sync, sync-play,
+phase, morphing, exp, fold, pwm, random, trigger-mode (8 slots); `pnoise` = hz, hz-random,
+mode, timbre, trigger-mode (8 slots); pitch env = start / end / center / center-pos /
+flat-len / start-curve / end-curve. Every MAP slot = dest + min + max (+ live value).
+
+### 13.1 Done — v0.3.0 (P2a)
+- **Single param table** (`g_params` in `mist.c`) drives set/get/state/chain_params; menu
+  layout lives only in `module.json` (plugin returns -1 for `ui_hierarchy`; both host paths
+  fall back to the file). New params = one table row + one module.json entry.
+- **IN GAIN** (−12..+24 dB, default +6) on the processing input only (dry untouched).
+- **mod-atrg** (audio trigger): peak detector on the dry input → threshold (−6 dB hysteresis,
+  30 ms hold-off) → 5 ms peak-capture attack → exponential RETURN. SCALE 0 = every hit full,
+  1 = height follows dB over threshold (24 dB span). **2 MAP slots**; ranges are *offsets from
+  the knob* (−100..+100 % of the dest range) so the knob stays live. Default T1 = FB Post
+  0→+35 % (each hit throws more into the tail); T2 off.
+- Feedback tap delay is now **smoothed (30 ms glide)** so modulating SIZE/PITCH/BLUR doesn't
+  click. Verified bit-identical to v0.2.4 when in_gain=0 + slots off.
+- UI: root (8 knobs as before + In Gain/Width/Vol/Freeze/Reverse) → **Trigger** page
+  (Thresh/Return/Scale) → **Trigger Map** page (T1 dest/min/max, T2 dest/min/max).
+
+### 13.2 Next — generic modulator framework (do before the 2nd modulator)
+Refactor `atrg` into `mod_t { type; float p[]; slot_t slots[N]; float out; }` with an
+`eval_block()` per type, evaluated **once per block** in a fixed order
+`atrg → pnoise → morf` so a later mod can target an earlier one's params (inter-mod routing,
+§7). Slot offsets from all mods **sum**, then clamp — same rule as today. Keep slot count a
+`#define` (2 now; Stranular uses 8 for LFOs — raise once the canvas door UI exists, §8).
+Destinations grow to include other mods' rate/depth.
+
+### 13.3 v0.4 — `lfo-morf` (morphing LFO)
+- Phasor per block; **rate** = Hz (0.01–20) or **sync** (off, 1/32 … 4 bars via
+  `host->get_bpm()`); **hz-random** = per-cycle rate jitter; **phase** offset.
+- **Shape**: `morphing` sweeps sine → triangle → saw → square continuously; `pwm` skews the
+  duty/tilt; `exp` bends the curve; `fold` wavefolds it (both cheap, per-block).
+- **random** = per-cycle amplitude randomisation.
+- **trigger-mode**: free / retrigger on **atrg hit** (the musical one for the sampler) /
+  retrigger on **transport start** (`host->get_clock_status()` → `RUNNING`; returns
+  `UNAVAILABLE` if clock out isn't configured — fall back to free and say so in the UI).
+- UI: **LFO** page (rate, sync, shape, pwm, exp, fold, random, trigger) + **LFO Map** page.
+  Reuse the framework's `LFO` widget for the shape display (§8).
+
+### 13.4 v0.5 — `lfo-pnoise` (smooth random)
+1-D gradient (Perlin-style) noise, sampled per block: **hz** + hz-random, **timbre** = octave
+count/roughness (1 octave = slow drift, 4 = jittery), **mode** = smooth / stepped (S&H),
+trigger-mode as morf. Cheapest of the three; great on BLUR/WIDTH/PITCH for "alive" textures.
+
+### 13.5 v0.6 — per-grain pitch envelope
+Each grain gets a pitch *contour* across its life instead of one ratio:
+`start` → (curve) → `center` held for `flat-len` around `center-pos` → (curve) → `end`,
+all in semitones relative to the grain's base pitch.
+- **DSP:** at spawn, precompute 8–16 ratio breakpoints into the grain struct; per sample,
+  linear-interp the ratio (no per-sample `powf` × 24 grains).
+- **Safety:** forward-reading grains must not overtake the write head — `ratio_max` (feedback
+  delay sizing) must include the envelope's max ratio, not just PITCH+BLUR.
+- UI: **Pitch Env** page (start, end, center, center-pos, flat-len, start-curve, end-curve).
+  Also make these mod destinations.
+
+### 13.6 Also queued (small)
+- `rev-ratio` (% of grains reversed — replaces the binary toggle) and `size-exp` (§12).
+- Separate `pos-rnd` / `size-rnd` from BLUR (§12) once there's a page for them.
+- `mod-d3` (3-stage decay env, triggered by atrg) — natural follow-on to atrg.
+- Use `host->sample_rate` instead of a hard-coded `SR` (robustness).
+- **Listening tool:** a tiny C harness that runs the *real* `mist.c` over a WAV file
+  (replaces keeping `mist_render.py` in sync — it's still at 48k and has no mods).
+
+### 13.7 Risks
+- **Menu depth** — each modulator adds 2 sub-pages until the canvas "door" lands (§8).
+- **CPU** — mods are per-block (cheap); the pitch envelope is the only per-sample cost.
+  Profile with schwung's OTLP spans (`otlp_trace_on`, `shadow.mix_audio`).
+- **Transport sync** depends on the Move's clock output being configured.

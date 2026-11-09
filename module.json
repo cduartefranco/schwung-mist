@@ -2,8 +2,8 @@
   "id": "mist",
   "name": "(MIST)",
   "abbrev": "MS",
-  "version": "0.2.4",
-  "description": "Granular feedback processor — grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
+  "version": "0.3.0",
+  "description": "Granular feedback processor \u2014 grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
   "author": "ABLENTON",
   "license": "MIT",
   "dsp": "mist.so",
@@ -18,20 +18,299 @@
         "root": {
           "name": "MIST",
           "params": [
-            { "key": "size",    "label": "Size",    "type": "int",   "min": 8, "max": 500, "default": 220, "step": 1, "unit": "ms" },
-            { "key": "amount",  "label": "Amount",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.60, "step": 0.01, "unit": "%" },
-            { "key": "spike",   "label": "Spike",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.50, "step": 0.01, "unit": "%" },
-            { "key": "blur",    "label": "Blur",    "type": "float", "min": 0.0, "max": 1.0, "default": 0.15, "step": 0.01, "unit": "%" },
-            { "key": "pitch",   "label": "Pitch",   "type": "float", "min": -36.0, "max": 36.0, "default": -12.0, "step": 0.1, "unit": "st" },
-            { "key": "fb_pre",  "short_name": "FBpre",  "label": "FB Pre",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.0, "step": 0.01, "unit": "%" },
-            { "key": "fb_post", "short_name": "FBpost", "label": "FB Post", "type": "float", "min": 0.0, "max": 1.0, "default": 0.45, "step": 0.01, "unit": "%" },
-            { "key": "mix",     "label": "Mix",     "type": "float", "min": 0.0, "max": 1.0, "default": 1.00, "step": 0.01, "unit": "%" },
-            { "key": "width",   "label": "Width",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.60, "step": 0.01, "unit": "%" },
-            { "key": "vol",     "label": "Vol",     "type": "float", "min": 0.0, "max": 1.5, "default": 0.90, "step": 0.01, "unit": "%" },
-            { "key": "freeze",  "label": "Freeze",  "type": "enum",  "options": ["off", "on"], "default": 0 },
-            { "key": "reverse", "label": "Reverse", "type": "enum",  "options": ["off", "on"], "default": 0 }
+            {
+              "key": "size",
+              "label": "Size",
+              "type": "int",
+              "min": 8,
+              "max": 500,
+              "default": 220,
+              "step": 1,
+              "unit": "ms"
+            },
+            {
+              "key": "amount",
+              "label": "Amount",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.6,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "spike",
+              "label": "Spike",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.5,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "blur",
+              "label": "Blur",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.15,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "pitch",
+              "label": "Pitch",
+              "type": "float",
+              "min": -36.0,
+              "max": 36.0,
+              "default": -12.0,
+              "step": 0.1,
+              "unit": "st"
+            },
+            {
+              "key": "fb_pre",
+              "short_name": "FBpre",
+              "label": "FB Pre",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.0,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "fb_post",
+              "short_name": "FBpost",
+              "label": "FB Post",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.45,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "mix",
+              "label": "Mix",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 1.0,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "width",
+              "label": "Width",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.6,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "vol",
+              "label": "Vol",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.5,
+              "default": 0.9,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "in_gain",
+              "label": "In Gain",
+              "type": "float",
+              "min": -12.0,
+              "max": 24.0,
+              "default": 6.0,
+              "step": 0.5,
+              "unit": "dB"
+            },
+            {
+              "key": "freeze",
+              "label": "Freeze",
+              "type": "enum",
+              "options": [
+                "off",
+                "on"
+              ],
+              "default": 0
+            },
+            {
+              "key": "reverse",
+              "label": "Reverse",
+              "type": "enum",
+              "options": [
+                "off",
+                "on"
+              ],
+              "default": 0
+            },
+            {
+              "level": "trigger",
+              "label": "Trigger"
+            },
+            {
+              "level": "trig_map",
+              "label": "Trigger Map"
+            }
           ],
-          "knobs": ["size", "amount", "spike", "blur", "pitch", "fb_pre", "fb_post", "mix"]
+          "knobs": [
+            "size",
+            "amount",
+            "spike",
+            "blur",
+            "pitch",
+            "fb_pre",
+            "fb_post",
+            "mix"
+          ]
+        },
+        "trigger": {
+          "label": "Trigger",
+          "knobs": [
+            "trg_thresh",
+            "trg_return",
+            "trg_scale"
+          ],
+          "params": [
+            {
+              "key": "trg_thresh",
+              "short_name": "Thresh",
+              "label": "Thresh",
+              "type": "float",
+              "min": -60.0,
+              "max": 0.0,
+              "default": -24.0,
+              "step": 0.5,
+              "unit": "dB"
+            },
+            {
+              "key": "trg_return",
+              "short_name": "Return",
+              "label": "Return",
+              "type": "int",
+              "min": 10,
+              "max": 2000,
+              "default": 300,
+              "step": 1,
+              "unit": "ms"
+            },
+            {
+              "key": "trg_scale",
+              "label": "Scale",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.5,
+              "step": 0.01,
+              "unit": "%",
+              "short_name": "Scale"
+            }
+          ]
+        },
+        "trig_map": {
+          "label": "Trigger Map",
+          "knobs": [
+            "trg1_dest",
+            "trg1_min",
+            "trg1_max",
+            null,
+            "trg2_dest",
+            "trg2_min",
+            "trg2_max",
+            null
+          ],
+          "params": [
+            {
+              "key": "trg1_dest",
+              "short_name": "T1 Dst",
+              "label": "T1 Dest",
+              "type": "enum",
+              "options": [
+                "Off",
+                "Size",
+                "Amount",
+                "Spike",
+                "Blur",
+                "Pitch",
+                "FB Pre",
+                "FB Post",
+                "Mix",
+                "Width",
+                "Vol"
+              ],
+              "default": 7
+            },
+            {
+              "key": "trg1_min",
+              "label": "T1 Min",
+              "type": "float",
+              "min": -1.0,
+              "max": 1.0,
+              "default": 0.0,
+              "step": 0.01,
+              "unit": "%",
+              "short_name": "T1 Min"
+            },
+            {
+              "key": "trg1_max",
+              "label": "T1 Max",
+              "type": "float",
+              "min": -1.0,
+              "max": 1.0,
+              "default": 0.35,
+              "step": 0.01,
+              "unit": "%",
+              "short_name": "T1 Max"
+            },
+            {
+              "key": "trg2_dest",
+              "short_name": "T2 Dst",
+              "label": "T2 Dest",
+              "type": "enum",
+              "options": [
+                "Off",
+                "Size",
+                "Amount",
+                "Spike",
+                "Blur",
+                "Pitch",
+                "FB Pre",
+                "FB Post",
+                "Mix",
+                "Width",
+                "Vol"
+              ],
+              "default": 0
+            },
+            {
+              "key": "trg2_min",
+              "label": "T2 Min",
+              "type": "float",
+              "min": -1.0,
+              "max": 1.0,
+              "default": 0.0,
+              "step": 0.01,
+              "unit": "%",
+              "short_name": "T2 Min"
+            },
+            {
+              "key": "trg2_max",
+              "label": "T2 Max",
+              "type": "float",
+              "min": -1.0,
+              "max": 1.0,
+              "default": -0.3,
+              "step": 0.01,
+              "unit": "%",
+              "short_name": "T2 Max"
+            }
+          ]
         }
       }
     }
