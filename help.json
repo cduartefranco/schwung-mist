@@ -21,7 +21,15 @@
     "trg1_dest": "Trigger Map: what the trigger moves (Off, Size, Pitch, FB Post...). T2 is a second, independent target.",
     "trg1_min": "Trigger Map: offset from the knob at rest (between hits), -100..+100% of that param's range.",
     "trg1_max": "Trigger Map: offset from the knob at the peak of a hit. Min > Max inverts it.",
-    "fb_time": "Echo time for FB Post in ms. 0 = tight/auto (one grain behind, the classic bloom); 200-600 = audible repeating echoes."
+    "fb_time": "Echo time for FB Post in ms. 0 = tight/auto (one grain behind, the classic bloom); 200-600 = audible repeating echoes.",
+    "density": "Grains per second (Simplos TRIGGER). More = denser, smoother, more detailed cloud; fewer = audible separate grains. Default 22 (the reference engine).",
+    "spread": "How far each grain is scattered across the stereo field.",
+    "gmode": "Rhythm page: Free = steady grain stream at Density. Euclid = grains fire on a tempo-synced euclidean rhythm.",
+    "eu_pattern": "Rhythm page: euclidean variant (pulses/steps) — tresillo, cinquillo, bossa 5/16, 7/16, 9/16...",
+    "eu_rate": "Rhythm page: step length, synced to the Move tempo.",
+    "eu_rot": "Rhythm page: rotate the pattern by N steps (shifts where the accents land).",
+    "eu_burst": "Rhythm page: grains fired per pulse (a quick ratchet/cluster, spaced by Density).",
+    "eu_jitter": "Rhythm page: humanize — random late offset per pulse."
   },
   "tips": [
     "Dry shimmer cloud: Size ~85ms, Spike ~0.6, FB Pre/Post 0, Amount ~0.45.",
@@ -30,6 +38,8 @@
     "Freeze a moment: turn Freeze on while playing to hold the last captured buffer indefinitely.",
     "Pitched feedback (+/- 7-12 st) compounds each pass — keep FB Post low (~0.2) or it runs away fast.",
     "Audio trigger (default on): each sampler hit pushes FB Post +35% then returns — dub throws for free. Set T1 Dest to Off to disable.",
-    "Breathing grains: T2 Dest = Size, Min 0, Max -30% — grains tighten on every hit and relax between them."
+    "Breathing grains: T2 Dest = Size, Min 0, Max -30% — grains tighten on every hit and relax between them.",
+    "Rhythmic grains: Rhythm > Mode Euclid, Pattern 5/16 Bossa, Burst 3, Density 60, Spike high — stuttered granular percussion locked to tempo.",
+    "More detail: raise Density (30-60) and Spread; lower Size for finer grains."
   ]
 }

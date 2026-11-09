@@ -38,7 +38,9 @@
 #define TWO_PI      6.283185307179586f
 #define RINGLEN     262144           /* 2^18 samples ~5.94s @44.1k — input+feedback ring */
 #define RMASK       (RINGLEN - 1)
-#define MAX_GRAINS  24                /* bounded voice pool — no malloc in process */
+#define MAX_GRAINS  64                /* bounded voice pool — no malloc in process */
+#define WET_MAKEUP  2.37f             /* +7.5 dB */
+#define WLEN        1024              /* grain window lookup table (rebuilt on SPIKE/AMOUNT change) */
 #define MAX_SIZE_MS 500.0f
 #define MIN_SIZE_MS 8.0f
 #define TRG_SLOTS   2
@@ -58,6 +60,7 @@ enum {
     P_TRG_THRESH, P_TRG_RETURN, P_TRG_SCALE,
     P_TRG1_DEST, P_TRG1_MIN, P_TRG1_MAX,
     P_TRG2_DEST, P_TRG2_MIN, P_TRG2_MAX,
+    P_DENSITY, P_SPREAD, P_GMODE, P_EU_PATTERN, P_EU_RATE, P_EU_ROT, P_EU_BURST, P_EU_JITTER,
     P_COUNT
 };
 
@@ -71,10 +74,22 @@ typedef struct {
 
 /* Modulation destinations (index into this list = the DEST enum value).
    Entry 0 is "Off". Everything else is a continuous base param. */
-#define DEST_OPTS "Off|Size|Amount|Spike|Blur|Pitch|FB Pre|FB Post|Mix|Width|Vol"
+/* append-only: saved presets store the index */
+#define DEST_OPTS "Off|Size|Amount|Spike|Blur|Pitch|FB Pre|FB Post|Mix|Width|Vol|Density|Spread"
 static const int g_dest_param[] = {
-    -1, P_SIZE, P_AMOUNT, P_SPIKE, P_BLUR, P_PITCH, P_FB_PRE, P_FB_POST, P_MIX, P_WIDTH, P_VOL
+    -1, P_SIZE, P_AMOUNT, P_SPIKE, P_BLUR, P_PITCH, P_FB_PRE, P_FB_POST, P_MIX, P_WIDTH, P_VOL,
+    P_DENSITY, P_SPREAD
 };
+
+/* Euclidean grain-trigger variants (pulses k over steps n; Toussaint's classics).
+   append-only: saved presets store the index */
+#define EU_OPTS "5/8 Cinquillo|3/8 Tresillo|2/5|3/4|3/7|4/7|4/9|5/9|5/11|5/12|5/16 Bossa|7/12|7/16|9/16|11/16|13/16|Every step"
+static const int g_eu_k[] = {5, 3, 2, 3, 3, 4, 4, 5, 5, 5, 5,  7,  7,  9, 11, 13, 1};
+static const int g_eu_n[] = {8, 8, 5, 4, 7, 7, 9, 9, 11, 12, 16, 12, 16, 16, 16, 16, 1};
+#define N_EU ((int)(sizeof(g_eu_k) / sizeof(g_eu_k[0])))
+/* step length as a fraction of a 4/4 bar */
+#define EU_RATE_OPTS "1/32|1/16T|1/16|1/8T|1/8|1/4"
+static const float g_eu_rate[] = {1.0f/32, 1.0f/24, 1.0f/16, 1.0f/12, 1.0f/8, 1.0f/4};
 #define N_DEST ((int)(sizeof(g_dest_param) / sizeof(g_dest_param[0])))
 
 static const pdef_t g_params[P_COUNT] = {
@@ -104,6 +119,15 @@ static const pdef_t g_params[P_COUNT] = {
     [P_TRG2_DEST] = {"trg2_dest", "T2 Dest",PT_ENUM,  0, N_DEST - 1, 0 /*Off*/,     1, NULL, DEST_OPTS},
     [P_TRG2_MIN]  = {"trg2_min",  "T2 Min", PT_FLOAT, -1, 1,   0.00f, 0.01f, NULL, NULL},
     [P_TRG2_MAX]  = {"trg2_max",  "T2 Max", PT_FLOAT, -1, 1,  -0.30f, 0.01f, NULL, NULL},
+    /* grain stream: density (= Simplos TRIGGER, ref default 22/s) + euclidean rhythm mode */
+    [P_DENSITY]   = {"density",  "Density", PT_FLOAT, 1, 100,  22,    0.5f,  "/s", NULL},
+    [P_SPREAD]    = {"spread",   "Spread",  PT_FLOAT, 0, 1,    0.70f, 0.01f, NULL, NULL},
+    [P_GMODE]     = {"gmode",    "Mode",    PT_ENUM,  0, 1,    0, 1, NULL, "Free|Euclid"},
+    [P_EU_PATTERN]= {"eu_pattern","Pattern",PT_ENUM,  0, 16,   0, 1, NULL, EU_OPTS},
+    [P_EU_RATE]   = {"eu_rate",  "Rate",    PT_ENUM,  0, 5,    2, 1, NULL, EU_RATE_OPTS},
+    [P_EU_ROT]    = {"eu_rot",   "Rotate",  PT_INT,   0, 15,   0, 1, NULL, NULL},
+    [P_EU_BURST]  = {"eu_burst", "Burst",   PT_INT,   1, 8,    1, 1, NULL, NULL},
+    [P_EU_JITTER] = {"eu_jitter","Jitter",  PT_FLOAT, 0, 1,    0.05f, 0.01f, NULL, NULL},
 };
 
 static const int g_slot_params[TRG_SLOTS][3] = {
@@ -164,6 +188,13 @@ static inline float soft_limit(float x, float T) {
     float s = x < 0.0f ? -1.0f : 1.0f;
     return s * (T + (1.0f - T) * tanhf((a - T) / (1.0f - T)));
 }
+/* same knee, but the curve flattens at ceiling C (< 1) instead of full scale */
+static inline float soft_limit_c(float x, float T, float C) {
+    float a = fabsf(x);
+    if (a <= T) return x;
+    float s = x < 0.0f ? -1.0f : 1.0f;
+    return s * (T + (C - T) * tanhf((a - T) / (C - T)));
+}
 
 typedef struct {
     int    active;
@@ -171,10 +202,8 @@ typedef struct {
     float  len;         /* grain length in samples (captured at spawn) */
     float  read_pos;    /* fractional read index into the ring, advances by ratio */
     float  ratio;        /* pitch playback rate */
-    float  pan;           /* -1..1 */
-    /* window shape captured at spawn (SPIKE/AMOUNT can move mid-grain otherwise) */
-    float  atk_n, dec_n;  /* attack/decay length in samples */
-    float  atk_k;         /* attack curve exponent */
+    float  gl, gr;        /* equal-power pan gains (computed once at spawn) */
+    float  wstep;         /* window-table increment per sample = WLEN / len */
 } grain_t;
 
 /* audio trigger (mod-atrg) state */
@@ -200,6 +229,19 @@ typedef struct {
     grain_t grains[MAX_GRAINS];
     float   next_onset;     /* samples until the next grain spawn (control-rate accum) */
     uint32_t rng;
+
+    /* grain window LUT (ref grain_window(), normalized 0..1 over the grain) */
+    float win[WLEN + 1];
+    float win_spike, win_amount;
+
+    /* euclidean scheduler */
+    float eu_phase;         /* samples into the current step */
+    int   eu_step;
+    int   eu_pending;       /* a pulse is waiting out its jitter delay */
+    float eu_wait;
+    int   burst_left;
+    float burst_next;
+    int   clock_prev;
 
     /* feedback path (= the reference engine, tools/mist_render.py): the WET grain
        output -> DC block -> damp LP -> soft limit is stored in its own ring, and
@@ -251,8 +293,10 @@ static void *v2_create(const char *module_dir, const char *config_json) {
     e->rng = 0xC0FFEEu;
     e->next_onset = 0.0f;
     e->trg.armed = 1;
+    e->win_spike = e->win_amount = -1.0f;    /* force first window build */
+    e->eu_step = -1;
 
-    v2_log("instance created (v0.3.1 ref-feedback)");
+    v2_log("instance created (v0.4 density+euclid)");
     return e;
 }
 
@@ -287,6 +331,41 @@ static inline void atrg_tick(atrg_t *t, float x, float thr, float rel_det,
     }
 }
 
+/* ref grain_window(): SPIKE sharpens the attack (power curve), AMOUNT rounds the decay */
+static void build_window(mist_t *e, float spike, float amount) {
+    const float atk = 0.02f + 0.33f * (1.0f - spike);
+    const float ka  = 0.3f + 3.0f * spike;
+    for (int i = 0; i <= WLEN; i++) {
+        float x = (float)i / (float)WLEN, w;
+        if (x < atk) w = powf(x / atk, 1.0f / ka);
+        else {
+            float t = (x - atk) / (1.0f - atk);
+            w = (1.0f - amount) * (1.0f - t) + amount * (0.5f + 0.5f * cosf((float)M_PI * t));
+        }
+        e->win[i] = w;
+    }
+    e->win[WLEN] = 0.0f;
+    e->win_spike = spike; e->win_amount = amount;
+}
+
+static void spawn_grain(mist_t *e, float size_n, float grain_delay, float pitch,
+                        float blur, int reverse, float spread) {
+    for (int v = 0; v < MAX_GRAINS; v++) {
+        grain_t *g = &e->grains[v];
+        if (g->active) continue;
+        g->active = 1; g->age = 0.0f; g->len = size_n;
+        g->wstep = (float)WLEN / size_n;
+        float st = pitch + randf(&e->rng) * 12.0f * blur;
+        g->ratio = powf(2.0f, st / 12.0f) * (reverse ? -1.0f : 1.0f);
+        float posjit = randf(&e->rng) * blur * size_n;
+        g->read_pos = (float)e->wr - grain_delay + posjit;
+        float pan = randf(&e->rng) * spread;
+        g->gl = sqrtf(0.5f * (1.0f - pan)); g->gr = sqrtf(0.5f * (1.0f + pan));
+        return;
+    }
+    /* voice pool full -> drop (bounded) */
+}
+
 static void v2_process(void *inst, int16_t *io, int frames) {
     mist_t *e = (mist_t *)inst;
     if (!e || !e->ring || !e->wet) return;
@@ -318,10 +397,30 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     const float in_gain = powf(10.0f, e->pv[P_IN_GAIN] / 20.0f);
 
     const float size_n  = clampf(p_size, MIN_SIZE_MS, MAX_SIZE_MS) * 0.001f * SR;
-    /* DENSITY is implicit from SIZE on the base page (P1 has no separate density
-       knob yet — see MIST_ARCHITECTURE §5 page-2 note); target ~60% grain overlap. */
-    const float density = clampf(SR / (size_n * 0.6f), 4.0f, 200.0f);
+    const float density = clampf(pe[P_DENSITY], 1.0f, 100.0f);      /* grains / s (ref) */
     const float grain_spacing = SR / density;
+    const float spread  = pe[P_SPREAD];
+
+    /* euclidean mode */
+    const int   euclid  = (int)e->pv[P_GMODE] == 1;
+    const int   eu_i    = (int)clampf(e->pv[P_EU_PATTERN], 0, N_EU - 1);
+    const int   eu_k    = g_eu_k[eu_i], eu_n = g_eu_n[eu_i];
+    const int   eu_rot  = (int)e->pv[P_EU_ROT];
+    const int   burst   = (int)e->pv[P_EU_BURST];
+    float bpm = (g_host && g_host->get_bpm) ? g_host->get_bpm() : 120.0f;
+    if (!(bpm >= 40.0f && bpm <= 300.0f)) bpm = 120.0f;
+    const float step_len = (240.0f / bpm) * g_eu_rate[(int)clampf(e->pv[P_EU_RATE], 0, 5)] * SR;
+    const float burst_gap = fminf(grain_spacing, step_len / (float)burst);
+    const float jit = e->pv[P_EU_JITTER];
+    /* restart the pattern on transport start (if the host exposes the clock) */
+    if (g_host && g_host->get_clock_status) {
+        int cs = g_host->get_clock_status();
+        if (cs == 2 && e->clock_prev != 2) { e->eu_step = -1; e->eu_phase = step_len; }
+        e->clock_prev = cs;
+    }
+
+    if (fabsf(p_spike - e->win_spike) > 0.004f || fabsf(p_amount - e->win_amount) > 0.004f)
+        build_window(e, p_spike, p_amount);
 
     /* adaptive feedback delay: TRACKS grain size (the Simplos signature) —
        pre = tight (grain_delay), post = looser (4x), both still adapt with SIZE */
@@ -334,7 +433,7 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     if (!e->gd_init) { e->gd_s = gd_target; e->pd_s = pd_target; e->gd_init = 1; }
     const float gd_k = 1.0f - expf(-1.0f / (0.030f * SR));     /* ~30 ms glide */
 
-    const float dampA = expf(-TWO_PI * 6500.0f / SR);          /* ref damp_hz 6500 */
+    const float dampA = expf(-TWO_PI * 7000.0f / SR);          /* ref preset damp_hz 7000 */
     const float MK = 1.7f;                     /* feedback make-up (re-granulation loss) */
 
     /* 2-pole Butterworth LP @ 14 kHz (ref out_lp), bilinear */
@@ -343,12 +442,9 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     const float lb0 = lpK * lpK * lpN, lb1 = 2.0f * lb0, lb2 = lb0;
     const float la1 = 2.0f * (lpK * lpK - 1.0f) * lpN, la2 = (1.0f - lpK / lpQ + lpK * lpK) * lpN;
 
-    const float atk_n = fmaxf(1.0f, (0.02f + 0.33f * (1.0f - p_spike)) * size_n);
-    const float dec_n = fmaxf(1.0f, size_n - atk_n);
-    const float atk_k = 1.0f / (0.3f + 3.0f * p_spike);
-    const float decAmt = p_amount;
-
-    const float overlap = fmaxf(1.0f, grain_spacing > 0 ? (SR / grain_spacing) * (size_n / SR) : 1.0f);
+    /* overlap normalization (ref): grains alive at once -> 1/sqrt so denser != louder */
+    const float eff_rate = euclid ? ((float)eu_k / (float)eu_n) * (SR / step_len) * (float)burst : density;
+    const float overlap = fmaxf(1.0f, eff_rate * (size_n / SR));
     const float gnorm = 1.0f / sqrtf(overlap);
 
     /* trigger constants */
@@ -381,21 +477,37 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         e->ring[idx] = write_val + fb_in;
         e->wr = (idx + 1) & RMASK;
 
-        /* --- control-rate grain spawn (per-sample accumulator) --- */
-        e->next_onset -= 1.0f;
-        if (e->next_onset <= 0.0f) {
-            e->next_onset = grain_spacing * (0.85f + 0.3f * ((randf(&e->rng) + 1.0f) * 0.5f));
-            for (int v = 0; v < MAX_GRAINS; v++) {
-                if (!e->grains[v].active) {
-                    grain_t *g = &e->grains[v];
-                    g->active = 1; g->age = 0.0f; g->len = size_n;
-                    float st = p_pitch + randf(&e->rng) * 12.0f * p_blur;
-                    g->ratio = powf(2.0f, st / 12.0f) * (p_reverse ? -1.0f : 1.0f);
-                    float posjit = randf(&e->rng) * p_blur * size_n;
-                    g->read_pos = (float)e->wr - grain_delay + posjit;
-                    g->pan = randf(&e->rng) * 0.7f;
-                    g->atk_n = atk_n; g->dec_n = dec_n; g->atk_k = atk_k;
-                    break;                                /* voice pool full -> drop (bounded) */
+        /* --- grain scheduling --- */
+        if (!euclid) {
+            /* free: uniform stream at DENSITY, +-15 % humanize (ref) */
+            e->next_onset -= 1.0f;
+            if (e->next_onset <= 0.0f) {
+                e->next_onset = grain_spacing * (0.85f + 0.3f * ((randf(&e->rng) + 1.0f) * 0.5f));
+                spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread);
+            }
+        } else {
+            /* euclid: tempo-synced steps; a pulse step fires BURST grains spaced by
+               the density spacing (clamped to fit the step), after a JITTER delay */
+            e->eu_phase += 1.0f;
+            if (e->eu_phase >= step_len) {
+                e->eu_phase -= step_len;
+                if (e->eu_phase >= step_len) e->eu_phase = 0.0f;
+                e->eu_step = (e->eu_step + 1) % eu_n;
+                int i = (e->eu_step + eu_rot) % eu_n;
+                if (((i * eu_k) % eu_n) < eu_k) {               /* Bresenham euclid */
+                    e->eu_pending = 1;
+                    e->eu_wait = ((randf(&e->rng) + 1.0f) * 0.5f) * jit * 0.5f * step_len;
+                }
+            }
+            if (e->eu_pending) {
+                e->eu_wait -= 1.0f;
+                if (e->eu_wait <= 0.0f) { e->eu_pending = 0; e->burst_left = burst; e->burst_next = 0.0f; }
+            }
+            if (e->burst_left > 0) {
+                e->burst_next -= 1.0f;
+                if (e->burst_next <= 0.0f) {
+                    spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread);
+                    e->burst_left--; e->burst_next = burst_gap;
                 }
             }
         }
@@ -405,19 +517,12 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         for (int v = 0; v < MAX_GRAINS; v++) {
             grain_t *g = &e->grains[v];
             if (!g->active) continue;
-            float k = g->age;
-            float w;
-            if (k < g->atk_n) {
-                w = powf(k / g->atk_n, g->atk_k);
-            } else {
-                float t = (k - g->atk_n) / g->dec_n;
-                float lin = 1.0f - t;
-                float cosShape = 0.5f + 0.5f * cosf((float)M_PI * t);
-                w = (1.0f - decAmt) * lin + decAmt * cosShape;
-            }
+            float wp = g->age * g->wstep;                   /* window LUT, linear interp */
+            int   wi = (int)wp; if (wi >= WLEN) wi = WLEN - 1;
+            float w  = e->win[wi] + (e->win[wi + 1] - e->win[wi]) * (wp - (float)wi);
             float s = read_cubic(e->ring, g->read_pos) * w * gnorm;
-            gl += s * sqrtf(0.5f * (1.0f - g->pan));
-            gr += s * sqrtf(0.5f * (1.0f + g->pan));
+            gl += s * g->gl;
+            gr += s * g->gr;
 
             g->read_pos += g->ratio;
             g->age += 1.0f;
@@ -435,7 +540,10 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         /* width (mid/side) on the wet grain sum */
         float mid = 0.5f * (gl + gr);
         float side = 0.5f * (gl - gr) * (0.3f + 1.7f * p_width);
-        float wL = mid + side, wR = mid - side;
+        /* wet make-up: the overlap-normalized grain sum sits ~7.8 dB under the input
+           (measured, tools/mist_wav.py); the ref renders were peak-normalized after
+           the fact. Applied AFTER the feedback tap, so loop gain / tails are unchanged. */
+        float wL = (mid + side) * WET_MAKEUP, wR = (mid - side) * WET_MAKEUP;
 
         {   /* 14 kHz LP on the WET only (ref out_lp; dry stays untouched on a master bus) */
             float in2[2] = {wL, wR};
@@ -454,7 +562,7 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         float oL = dry_g * xL + wet_g * wL;
         float oR = dry_g * xR + wet_g * wR;
         oL *= p_vol; oR *= p_vol;
-        oL = soft_limit(oL, 0.7f); oR = soft_limit(oR, 0.7f);
+        oL = soft_limit_c(oL, 0.7f, 0.944f); oR = soft_limit_c(oR, 0.7f, 0.944f);   /* -0.5 dBFS ceiling */
 
         io[n * 2]     = (int16_t)(clampf(oL, -1.0f, 1.0f) * 32767.0f);
         io[n * 2 + 1] = (int16_t)(clampf(oR, -1.0f, 1.0f) * 32767.0f);

@@ -2,7 +2,7 @@
   "id": "mist",
   "name": "(MIST)",
   "abbrev": "MS",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Granular feedback processor \u2014 grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
   "author": "ABLENTON",
   "license": "MIT",
@@ -101,6 +101,26 @@
               "unit": "%"
             },
             {
+              "key": "density",
+              "label": "Density",
+              "type": "float",
+              "min": 1.0,
+              "max": 100.0,
+              "default": 22.0,
+              "step": 0.5,
+              "unit": "/s"
+            },
+            {
+              "key": "spread",
+              "label": "Spread",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.7,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
               "key": "width",
               "label": "Width",
               "type": "float",
@@ -159,6 +179,10 @@
                 "on"
               ],
               "default": 0
+            },
+            {
+              "level": "rhythm",
+              "label": "Rhythm"
             },
             {
               "level": "trigger",
@@ -252,7 +276,9 @@
                 "FB Post",
                 "Mix",
                 "Width",
-                "Vol"
+                "Vol",
+                "Density",
+                "Spread"
               ],
               "default": 7
             },
@@ -294,7 +320,9 @@
                 "FB Post",
                 "Mix",
                 "Width",
-                "Vol"
+                "Vol",
+                "Density",
+                "Spread"
               ],
               "default": 0
             },
@@ -319,6 +347,121 @@
               "step": 0.01,
               "unit": "%",
               "short_name": "T2 Max"
+            }
+          ]
+        },
+        "rhythm": {
+          "label": "Rhythm",
+          "knobs": [
+            "gmode",
+            "density",
+            "eu_pattern",
+            "eu_rate",
+            "eu_rot",
+            "eu_burst",
+            "eu_jitter",
+            "spread"
+          ],
+          "params": [
+            {
+              "key": "gmode",
+              "label": "Mode",
+              "type": "enum",
+              "options": [
+                "Free",
+                "Euclid"
+              ],
+              "default": 0
+            },
+            {
+              "key": "density",
+              "label": "Density",
+              "type": "float",
+              "min": 1.0,
+              "max": 100.0,
+              "default": 22.0,
+              "step": 0.5,
+              "unit": "/s"
+            },
+            {
+              "key": "eu_pattern",
+              "short_name": "Pattern",
+              "label": "Pattern",
+              "type": "enum",
+              "options": [
+                "5/8 Cinquillo",
+                "3/8 Tresillo",
+                "2/5",
+                "3/4",
+                "3/7",
+                "4/7",
+                "4/9",
+                "5/9",
+                "5/11",
+                "5/12",
+                "5/16 Bossa",
+                "7/12",
+                "7/16",
+                "9/16",
+                "11/16",
+                "13/16",
+                "Every step"
+              ],
+              "default": 0
+            },
+            {
+              "key": "eu_rate",
+              "label": "Rate",
+              "type": "enum",
+              "options": [
+                "1/32",
+                "1/16T",
+                "1/16",
+                "1/8T",
+                "1/8",
+                "1/4"
+              ],
+              "default": 2
+            },
+            {
+              "key": "eu_rot",
+              "short_name": "Rotate",
+              "label": "Rotate",
+              "type": "int",
+              "min": 0,
+              "max": 15,
+              "default": 0,
+              "step": 1
+            },
+            {
+              "key": "eu_burst",
+              "label": "Burst",
+              "type": "int",
+              "min": 1,
+              "max": 8,
+              "default": 1,
+              "step": 1
+            },
+            {
+              "key": "eu_jitter",
+              "short_name": "Jitter",
+              "label": "Jitter",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.05,
+              "step": 0.01,
+              "unit": "%"
+            },
+            {
+              "key": "spread",
+              "label": "Spread",
+              "type": "float",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.7,
+              "step": 0.01,
+              "unit": "%"
             }
           ]
         }

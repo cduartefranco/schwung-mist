@@ -390,6 +390,18 @@ flat-len / start-curve / end-curve. Every MAP slot = dest + min + max (+ live va
 - UI: root (8 knobs as before + In Gain/Width/Vol/Freeze/Reverse) → **Trigger** page
   (Thresh/Return/Scale) → **Trigger Map** page (T1 dest/min/max, T2 dest/min/max).
 
+### 13.1b Done — v0.3.1 + v0.4.0 ("quality of processing")
+- **v0.3.1:** the C feedback path had diverged from the reference (tapped the raw input ring, no
+  re-granulation loss, still ×1.7) → 18 s+ tails. Ported the ref path exactly; default tail 2.2 s.
+- **v0.4.0:** DENSITY was hard-coded (~7.5 grains/s at 220 ms) vs the ref's 22/s → 3× sparser,
+  "lacking detail". Now a real param (1–100/s, default 22) + SPREAD; 64 voices with a window LUT
+  (no per-sample powf/cosf); **Euclid mode** (Rhythm page: 17 Toussaint variants, tempo-synced
+  rate, rotate, burst, jitter, restarts on transport start); damp 7 kHz (ref presets);
+  **+7.5 dB wet make-up** (the ref renders were peak-normalized offline — measured gap 7.8 dB)
+  with a −0.5 dBFS output ceiling.
+- **Listening tool:** `tools/mist_wav.py` renders WAVs through the *real* `dsp/mist.c`
+  (128-frame blocks @44.1k, like the host) → `~/Desktop/MIST renders/`. Use it before shipping.
+
 ### 13.2 Next — generic modulator framework (do before the 2nd modulator)
 Refactor `atrg` into `mod_t { type; float p[]; slot_t slots[N]; float out; }` with an
 `eval_block()` per type, evaluated **once per block** in a fixed order
