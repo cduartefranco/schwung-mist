@@ -32,6 +32,7 @@ cp build/mist.so dist/mist/mist.so
 chmod +x dist/mist/mist.so
 [ -f LICENSE ]   && cp LICENSE   dist/mist/LICENSE   || true
 [ -f README.md ] && cp README.md dist/mist/README.md || true
+[ -d ui ]        && cp -R ui     dist/mist/ui        || true
 
 cd dist
 tar -czvf mist-module.tar.gz mist/
