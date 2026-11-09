@@ -2,7 +2,7 @@
   "id": "mist",
   "name": "(MIST)",
   "abbrev": "MS",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Granular feedback processor \u2014 grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
   "author": "ABLENTON",
   "license": "MIT",
@@ -18,6 +18,16 @@
         "root": {
           "name": "MIST",
           "params": [
+            {
+              "key": "scope",
+              "label": "Scope",
+              "type": "canvas",
+              "canvas_script": "canvas.js",
+              "extra_keys": [
+                "viz"
+              ],
+              "fullscreen_live_ms": 50
+            },
             {
               "key": "size",
               "label": "Size",
@@ -36,7 +46,12 @@
               "max": 1.0,
               "default": 0.6,
               "step": 0.01,
-              "unit": "%"
+              "unit": "%",
+              "viz": {
+                "group": "win",
+                "role": "amount",
+                "kind": "custom:mist_window"
+              }
             },
             {
               "key": "spike",
@@ -46,7 +61,12 @@
               "max": 1.0,
               "default": 0.5,
               "step": 0.01,
-              "unit": "%"
+              "unit": "%",
+              "viz": {
+                "group": "win",
+                "role": "spike",
+                "kind": "custom:mist_window"
+              }
             },
             {
               "key": "blur",
@@ -291,7 +311,13 @@
                 "Spread",
                 "Scatter"
               ],
-              "default": 7
+              "default": 7,
+              "viz": {
+                "group": "t1",
+                "role": "dest",
+                "span": false,
+                "kind": "custom:mist_range"
+              }
             },
             {
               "key": "trg1_min",
@@ -302,7 +328,15 @@
               "default": 0.0,
               "step": 0.01,
               "unit": "%",
-              "short_name": "T1 Min"
+              "short_name": "T1 Min",
+              "viz": {
+                "group": "t1",
+                "role": "min",
+                "kind": "custom:mist_range",
+                "extra_keys": [
+                  "trg_env"
+                ]
+              }
             },
             {
               "key": "trg1_max",
@@ -313,7 +347,12 @@
               "default": 0.35,
               "step": 0.01,
               "unit": "%",
-              "short_name": "T1 Max"
+              "short_name": "T1 Max",
+              "viz": {
+                "group": "t1",
+                "role": "max",
+                "kind": "custom:mist_range"
+              }
             },
             {
               "key": "trg2_dest",
@@ -336,7 +375,13 @@
                 "Spread",
                 "Scatter"
               ],
-              "default": 0
+              "default": 0,
+              "viz": {
+                "group": "t2",
+                "role": "dest",
+                "span": false,
+                "kind": "custom:mist_range"
+              }
             },
             {
               "key": "trg2_min",
@@ -347,7 +392,15 @@
               "default": 0.0,
               "step": 0.01,
               "unit": "%",
-              "short_name": "T2 Min"
+              "short_name": "T2 Min",
+              "viz": {
+                "group": "t2",
+                "role": "min",
+                "kind": "custom:mist_range",
+                "extra_keys": [
+                  "trg_env"
+                ]
+              }
             },
             {
               "key": "trg2_max",
@@ -358,7 +411,12 @@
               "default": -0.3,
               "step": 0.01,
               "unit": "%",
-              "short_name": "T2 Max"
+              "short_name": "T2 Max",
+              "viz": {
+                "group": "t2",
+                "role": "max",
+                "kind": "custom:mist_range"
+              }
             }
           ]
         },
@@ -383,7 +441,13 @@
                 "Free",
                 "Euclid"
               ],
-              "default": 0
+              "default": 0,
+              "viz": {
+                "group": "eu",
+                "role": "mode",
+                "span": false,
+                "kind": "custom:mist_euclid"
+              }
             },
             {
               "key": "density",
@@ -419,7 +483,15 @@
                 "13/16",
                 "Every step"
               ],
-              "default": 0
+              "default": 0,
+              "viz": {
+                "group": "eu",
+                "role": "pattern",
+                "kind": "custom:mist_euclid",
+                "extra_keys": [
+                  "eu_pos"
+                ]
+              }
             },
             {
               "key": "eu_rate",
@@ -433,7 +505,12 @@
                 "1/8",
                 "1/4"
               ],
-              "default": 2
+              "default": 2,
+              "viz": {
+                "group": "eu",
+                "role": "rate",
+                "kind": "custom:mist_euclid"
+              }
             },
             {
               "key": "eu_rot",
@@ -443,7 +520,13 @@
               "min": 0,
               "max": 15,
               "default": 0,
-              "step": 1
+              "step": 1,
+              "viz": {
+                "group": "eu",
+                "role": "rot",
+                "span": false,
+                "kind": "custom:mist_euclid"
+              }
             },
             {
               "key": "eu_burst",

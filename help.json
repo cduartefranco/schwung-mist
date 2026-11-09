@@ -30,7 +30,8 @@
     "eu_rot": "Rhythm page: rotate the pattern by N steps (shifts where the accents land).",
     "eu_burst": "Rhythm page: grains fired per pulse (a quick ratchet/cluster, spaced by Density).",
     "eu_jitter": "Rhythm page: humanize — random late offset per pulse.",
-    "scatter": "Random grain position (up to +-40 ms) and looser timing. 0 = focused; higher = smeared, more diffuse cloud."
+    "scatter": "Random grain position (up to +-40 ms) and looser timing. 0 = focused; higher = smeared, more diffuse cloud.",
+    "scope": "Scope page: the feedback blob (rings swell with feedback, wobble with blur, pulse on trigger hits) with the live grains orbiting it; readouts show the live (modulated) values."
   },
   "tips": [
     "Dry shimmer cloud: Size ~85ms, Spike ~0.6, FB Pre/Post 0, Amount ~0.45.",

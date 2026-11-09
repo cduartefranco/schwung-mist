@@ -138,6 +138,28 @@ static const pdef_t g_params[P_COUNT] = {
     [P_SCATTER]   = {"scatter",  "Scatter", PT_FLOAT, 0, 1,    0.00f, 0.01f, NULL, NULL},
 };
 
+/* knob-cell widgets (drawn by canvas.js). Emitted in chain_params because that is
+   where the host looks for custom viz kinds; a group spans ADJACENT cells on one
+   row, span:false roles lend their value without taking a cell. */
+static const struct { int p; const char *viz; } g_viz[] = {
+    {P_AMOUNT,     "{\"group\":\"win\",\"role\":\"amount\",\"kind\":\"custom:mist_window\"}"},
+    {P_SPIKE,      "{\"group\":\"win\",\"role\":\"spike\",\"kind\":\"custom:mist_window\"}"},
+    {P_TRG1_DEST,  "{\"group\":\"t1\",\"role\":\"dest\",\"span\":false,\"kind\":\"custom:mist_range\"}"},
+    {P_TRG1_MIN,   "{\"group\":\"t1\",\"role\":\"min\",\"kind\":\"custom:mist_range\",\"extra_keys\":[\"trg_env\"]}"},
+    {P_TRG1_MAX,   "{\"group\":\"t1\",\"role\":\"max\",\"kind\":\"custom:mist_range\"}"},
+    {P_TRG2_DEST,  "{\"group\":\"t2\",\"role\":\"dest\",\"span\":false,\"kind\":\"custom:mist_range\"}"},
+    {P_TRG2_MIN,   "{\"group\":\"t2\",\"role\":\"min\",\"kind\":\"custom:mist_range\",\"extra_keys\":[\"trg_env\"]}"},
+    {P_TRG2_MAX,   "{\"group\":\"t2\",\"role\":\"max\",\"kind\":\"custom:mist_range\"}"},
+    {P_GMODE,      "{\"group\":\"eu\",\"role\":\"mode\",\"span\":false,\"kind\":\"custom:mist_euclid\"}"},
+    {P_EU_PATTERN, "{\"group\":\"eu\",\"role\":\"pattern\",\"kind\":\"custom:mist_euclid\",\"extra_keys\":[\"eu_pos\"]}"},
+    {P_EU_RATE,    "{\"group\":\"eu\",\"role\":\"rate\",\"kind\":\"custom:mist_euclid\"}"},
+    {P_EU_ROT,     "{\"group\":\"eu\",\"role\":\"rot\",\"span\":false,\"kind\":\"custom:mist_euclid\"}"},
+};
+static const char *viz_for(int p) {
+    for (size_t i = 0; i < sizeof(g_viz) / sizeof(g_viz[0]); i++) if (g_viz[i].p == p) return g_viz[i].viz;
+    return NULL;
+}
+
 static const int g_slot_params[TRG_SLOTS][3] = {
     {P_TRG1_DEST, P_TRG1_MIN, P_TRG1_MAX},
     {P_TRG2_DEST, P_TRG2_MIN, P_TRG2_MAX},
@@ -213,6 +235,8 @@ typedef struct {
     float  gl, gr;        /* equal-power pan gains (computed once at spawn) */
     float  wstep;         /* window-table increment per sample = WLEN / len */
     int    lvl;           /* which band-limited ring copy to read (by |ratio|) */
+    float  pan;           /* -1..1 (kept for the Scope page) */
+    int    id;            /* spawn counter (stable identity for the Scope page) */
 } grain_t;
 
 /* audio trigger (mod-atrg) state */
@@ -272,6 +296,12 @@ typedef struct {
     int   gd_init;
 
     atrg_t trg;
+
+    /* Scope page telemetry (read by get_param "viz"; benign cross-thread races only) */
+    int   grain_seq;
+    float in_pk, out_pk;          /* peak since the last viz read */
+    float pe_snap[P_COUNT];       /* effective (modulated) params of the last block */
+    int   eu_k_snap, eu_n_snap;
 
     /* CPU stats (process_block wall time), logged on destroy (not in the RT path) */
     double cpu_sum_us; float cpu_max_us; long cpu_n;
@@ -409,6 +439,7 @@ static void spawn_grain(mist_t *e, float size_n, float grain_delay, float pitch,
         float posjit = randf(&e->rng) * (blur * size_n + scatter_n);
         g->read_pos = (float)e->wr - grain_delay + posjit;
         float pan = randf(&e->rng) * spread;
+        g->pan = pan; g->id = ++e->grain_seq;
         g->gl = sqrtf(0.5f * (1.0f - pan)); g->gr = sqrtf(0.5f * (1.0f + pan));
         return;
     }
@@ -511,6 +542,7 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     for (int n = 0; n < frames; n++) {
         float xL = io[n * 2]     / 32768.0f;
         float xR = io[n * 2 + 1] / 32768.0f;
+        { float a = fmaxf(fabsf(xL), fabsf(xR)); if (a > e->in_pk) e->in_pk = a; }
         float xin[2] = {xL * in_gain, xR * in_gain};
 
         atrg_tick(&e->trg, fmaxf(fabsf(xL), fabsf(xR)), trg_thr, trg_rel,
@@ -634,7 +666,10 @@ static void v2_process(void *inst, int16_t *io, int frames) {
 
         io[n * 2]     = (int16_t)(clampf(oL, -1.0f, 1.0f) * 32767.0f);
         io[n * 2 + 1] = (int16_t)(clampf(oR, -1.0f, 1.0f) * 32767.0f);
+        { float a = fmaxf(fabsf(oL), fabsf(oR)); if (a > e->out_pk) e->out_pk = a; }
     }
+    memcpy(e->pe_snap, pe, sizeof(pe));
+    e->eu_k_snap = eu_k; e->eu_n_snap = eu_n;
 
     struct timespec t_1; clock_gettime(CLOCK_MONOTONIC, &t_1);
     float us = (float)((t_1.tv_sec - t_0.tv_sec) * 1e6 + (t_1.tv_nsec - t_0.tv_nsec) * 1e-3);
@@ -688,6 +723,29 @@ static int v2_get(void *inst, const char *key, char *buf, int len) {
 
     if (strcmp(key, "name") == 0) return snprintf(buf, len, "MIST");
     if (strcmp(key, "trg_env") == 0) return snprintf(buf, len, "%.3f", e->trg.env);  /* live meter */
+    if (strcmp(key, "eu_pos") == 0)    /* step,n,k,rot,mode — euclid strip playhead */
+        return snprintf(buf, len, "%d,%d,%d,%d,%d", e->eu_step < 0 ? 0 : e->eu_step,
+                        e->eu_n_snap, e->eu_k_snap, (int)e->pv[P_EU_ROT], (int)e->pv[P_GMODE]);
+    if (strcmp(key, "viz") == 0) {     /* Scope page: one compact snapshot per read */
+        const float *q = e->pe_snap;
+        int pos = app(buf, len, 0, "1,%.0f,%.2f,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d",
+            q[P_SIZE], q[P_BLUR], q[P_SPIKE], q[P_AMOUNT], q[P_PITCH], q[P_FB_PRE], q[P_FB_POST],
+            q[P_MIX], q[P_DENSITY], e->trg.env, e->in_pk, e->out_pk, (int)e->pv[P_GMODE],
+            e->eu_step < 0 ? 0 : e->eu_step, e->eu_n_snap, e->eu_k_snap, (int)e->pv[P_EU_ROT]);
+        e->in_pk = 0.0f; e->out_pk = 0.0f;
+        int ng = 0;
+        for (int v = 0; v < MAX_GRAINS && pos >= 0 && ng < 24; v++) {
+            const grain_t *g = &e->grains[v];
+            if (!g->active || g->len <= 0.0f) continue;
+            float ph = g->age / g->len;
+            int wi = (int)(g->age * g->wstep); if (wi < 0) wi = 0; if (wi > WLEN) wi = WLEN;
+            float st = 12.0f * log2f(fabsf(g->ratio) + 1e-6f);
+            pos = app(buf, len, pos, ";%d,%d,%d,%d,%d", g->id % 1000, (int)(ph * 99.0f),
+                      (int)lroundf(st), (int)(e->win[wi] * 9.0f + 0.5f), (int)lroundf(g->pan * 9.0f));
+            ng++;
+        }
+        return pos;
+    }
 
     if (strcmp(key, "state") == 0) {
         int pos = app(buf, len, 0, "{");
@@ -711,11 +769,14 @@ static int v2_get(void *inst, const char *key, char *buf, int len) {
                     pos = app(buf, len, pos, "%s\"%.*s\"", first ? "" : ",", n, o);
                     first = 0; o = bar ? bar + 1 : NULL;
                 }
-                pos = app(buf, len, pos, "],\"default\":%d}", (int)d->def);
+                pos = app(buf, len, pos, "],\"default\":%d", (int)d->def);
+                if (viz_for(j)) pos = app(buf, len, pos, ",\"viz\":%s", viz_for(j));
+                pos = app(buf, len, pos, "}");
             } else {
                 pos = app(buf, len, pos, ",\"type\":\"%s\",\"min\":%g,\"max\":%g,\"default\":%g,\"step\":%g",
                           d->type == PT_INT ? "int" : "float", d->min, d->max, d->def, d->step);
                 if (d->unit) pos = app(buf, len, pos, ",\"unit\":\"%s\"", d->unit);
+                if (viz_for(j)) pos = app(buf, len, pos, ",\"viz\":%s", viz_for(j));
                 pos = app(buf, len, pos, "}");
             }
         }
