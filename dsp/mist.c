@@ -137,8 +137,12 @@ static void *v2_create(const char *module_dir, const char *config_json) {
     e->ring = (float *)calloc(RINGLEN, sizeof(float));
     if (!e->ring) { v2_log("ring alloc failed"); free(e); return NULL; }
 
-    e->p_size = 120.0f; e->p_amount = 0.6f; e->p_spike = 0.5f; e->p_blur = 0.15f;
-    e->p_pitch = 0.0f; e->p_fb_pre = 0.0f; e->p_fb_post = 0.0f;
+    /* defaults = the Python reference's confirmed-praised "05 pitch down -12"
+       preset ("very successful, lots of character and weight") — the prior
+       defaults (pitch=0, fb=0) were a near-transparent grain-copy of the
+       input, so the first touch on hardware barely registered as an effect. */
+    e->p_size = 220.0f; e->p_amount = 0.6f; e->p_spike = 0.5f; e->p_blur = 0.15f;
+    e->p_pitch = -12.0f; e->p_fb_pre = 0.0f; e->p_fb_post = 0.45f;
     e->p_width = 0.6f; e->p_mix = 1.0f; e->p_vol = 0.9f;
     e->p_freeze = 0; e->p_reverse = 0;
     e->rng = 0xC0FFEEu;
@@ -342,13 +346,13 @@ static int v2_get(void *inst, const char *key, char *buf, int len) {
     }
     if (strcmp(key, "chain_params") == 0) {
         const char *p = "["
-            "{\"key\":\"size\",\"name\":\"Size\",\"type\":\"int\",\"min\":8,\"max\":500,\"default\":120,\"step\":1,\"unit\":\"ms\"},"
+            "{\"key\":\"size\",\"name\":\"Size\",\"type\":\"int\",\"min\":8,\"max\":500,\"default\":220,\"step\":1,\"unit\":\"ms\"},"
             "{\"key\":\"amount\",\"name\":\"Amount\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0.6,\"step\":0.01},"
             "{\"key\":\"spike\",\"name\":\"Spike\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0.5,\"step\":0.01},"
             "{\"key\":\"blur\",\"name\":\"Blur\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0.15,\"step\":0.01},"
-            "{\"key\":\"pitch\",\"name\":\"Pitch\",\"type\":\"float\",\"min\":-36,\"max\":36,\"default\":0,\"step\":0.1,\"unit\":\"st\"},"
+            "{\"key\":\"pitch\",\"name\":\"Pitch\",\"type\":\"float\",\"min\":-36,\"max\":36,\"default\":-12,\"step\":0.1,\"unit\":\"st\"},"
             "{\"key\":\"fb_pre\",\"name\":\"FB Pre\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0,\"step\":0.01},"
-            "{\"key\":\"fb_post\",\"name\":\"FB Post\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0,\"step\":0.01},"
+            "{\"key\":\"fb_post\",\"name\":\"FB Post\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0.45,\"step\":0.01},"
             "{\"key\":\"mix\",\"name\":\"Mix\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":1.0,\"step\":0.01},"
             "{\"key\":\"width\",\"name\":\"Width\",\"type\":\"float\",\"min\":0,\"max\":1,\"default\":0.6,\"step\":0.01},"
             "{\"key\":\"vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1.5,\"default\":0.9,\"step\":0.01},"
