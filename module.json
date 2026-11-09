@@ -2,7 +2,7 @@
   "id": "mist",
   "name": "(MIST)",
   "abbrev": "MS",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Granular feedback processor — grains re-play recent audio with a tight, adaptive feedback loop; pre/post blend morphs a dry cloud into a spatial delay",
   "author": "ABLENTON",
   "license": "MIT",

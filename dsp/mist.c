@@ -13,7 +13,7 @@
  * schwung Audio FX ABI v2 (same skeleton as ECO/schwung-tapescam): the host
  * calls move_audio_fx_init_v2(host) once; instances are created per Signal
  * Chain slot. Audio is processed IN-PLACE — stereo interleaved int16
- * [L0,R0,L1,R1,...], 48000 Hz.
+ * [L0,R0,L1,R1,...], 44100 Hz (host MOVE_SAMPLE_RATE — NOT 48k, a v0.2.3 bug).
  *
  * P1 scope (8 knobs, no mod matrix — that is P2/P3):
  *   SIZE  AMOUNT  SPIKE  BLUR  PITCH  FB-PRE  FB-POST  MIX
@@ -27,9 +27,9 @@
 
 #include "audio_fx_api_v1.h"
 
-#define SR          48000.0f
+#define SR          44100.0f          /* = host MOVE_SAMPLE_RATE (plugin_api_v1.h) */
 #define TWO_PI      6.283185307179586f
-#define RINGLEN     262144           /* 2^18 samples ~5.46s — input+feedback ring */
+#define RINGLEN     262144           /* 2^18 samples ~5.94s @44.1k — input+feedback ring */
 #define RMASK       (RINGLEN - 1)
 #define MAX_GRAINS  24                /* bounded voice pool — no malloc in process */
 #define MAX_SIZE_MS 500.0f
@@ -161,14 +161,6 @@ static void v2_destroy(void *inst) {
 static void v2_process(void *inst, int16_t *io, int frames) {
     mist_t *e = (mist_t *)inst;
     if (!e || !e->ring) return;
-
-    /* DIAGNOSTIC WIRING TEST — unconditional hard mute, bypassing all DSP.
-     * If this slot is genuinely in the live audio path, engaging MIST goes
-     * dead silent. If audio still comes through, this module isn't actually
-     * being called for real-time processing (a shim/host wiring issue, not
-     * a DSP/tuning issue). Remove once wiring is confirmed. */
-    for (int n = 0; n < frames; n++) { io[n * 2] = 0; io[n * 2 + 1] = 0; }
-    return;
 
     const float size_n  = clampf(e->p_size, MIN_SIZE_MS, MAX_SIZE_MS) * 0.001f * SR;
     /* DENSITY is implicit from SIZE on the base page (P1 has no separate density

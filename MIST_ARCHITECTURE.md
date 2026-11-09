@@ -275,6 +275,15 @@ most of the "hard part." **Display is 128×64, 1-bit** (`src/shared/e16_canvas.m
   *Deliverable: it granularizes + self-feeds + blends to spatial delay, offline.*
 - **P1 — Move audio_fx, 8 knobs.** `mist_movefx.c`, Performance page only, no modulators.
   Build via fork-CI, deploy, tune by ear on hardware.
+  **Status (2026-11-09): deployed but NOT yet confirmed working on hardware.** v0.2.0 shipped
+  near-transparent defaults (pitch=0, fb=0 — fixed in v0.2.1 to ship the praised "pitch -12 /
+  fb_post 0.45" preset as default). v0.2.0's scope UI (`ui/canvas.js`) was found crash-looping
+  the schwung shim on-device (800k+ repeated draw-hook error frames in debug.log) — pulled in
+  v0.2.2, UI deferred until the hook bug is root-caused separately from the audio question. User
+  still reports no audible effect after v0.2.1's defaults + v0.2.2's UI removal; a v0.2.3
+  diagnostic build (unconditional hard-mute in `v2_process`) was built and deployed to test
+  whether the module is in the live audio path at all vs. a host/shim wiring gap — result not
+  yet confirmed by the user as of this writing. **This is the active blocker before P2.**
 - **P2 — Mod engine + a few sources.** Add `lfo-morf`, `lfo-rrnd`, `mod-atrg`, `mod-d3` + a
   minimal fixed routing (e.g. 4 slots). Prove the matrix concept.
 - **P3 — Full matrix + canvas UI + presets.** All 10 modulators, free routing page, preset
@@ -296,4 +305,58 @@ most of the "hard part." **Display is 128×64, 1-bit** (`src/shared/e16_canvas.m
 - **Exact Simplos fingerprint** — unmatchable 1:1; target "great immediate granular-feedback
   processor," tuned by ear against the reference.
 - **int16 headroom** — grain sums + feedback can clip; keep internal float, limit before int16.
+
+---
+
+## 12. Stranular cross-reference (2026-11-09) — confirms §7, informs planned refinements
+
+Found two VST3 binaries for **Stranular** (a granular plugin, WIP/278802/VST3) while debugging
+MIST's hardware audio. Inspected via `strings` only — no disassembly, no code read — purely
+parameter/class names, the same level of info a manual or UI screenshot gives. Its C++ namespace
+is literally `ken::` (Kentaro) — real evidence it shares Simplos's author and reusable engine,
+not just a similar competitor.
+
+**Important distinction:** Stranular is a MIDI-triggered granular *synth* (`MPESynthesiserVoice`,
+`Portamento`, `Modulation Wheel`, `Omni Mode`) — not a live-audio *processor* like Simplos/MIST.
+Only the modulation-engine layer below is treated as shared DNA; instrument-only concepts (MIDI
+velocity, portamento, voice allocation) do NOT apply to MIST.
+
+**Confirms the §7 mod-matrix model exactly**, with real class names:
+- `ModAtrgProcessor`, `ModD3Processor`, `LFOMorfProcessor`, `LFOPnoiseProcessor` — 4 of the 10
+  §7 modulators are literal production class names (`mod-atrg`, `mod-d3`, `lfo-morf`,
+  `lfo-pnoise`). The other 6 aren't in this simpler sibling plugin — likely Simplos-exclusive.
+- `MapSource` / `MapTarget` / `MapButton` — confirms the "4 MAP slots: source → destination"
+  model already written into §7.
+- `RangeFader` + `RangeFaderParameterAttachment` — a real two-handle fader widget bound to a
+  param's min↔max — direct precedent for §7's "range-based routing, not signed depth."
+- `ModulatableAudioParameter` + `ButtonModulationAttachment` / `NumberBoxModulationAttachment` —
+  their mod system can target buttons/number-boxes too, broader than MIST's current
+  continuous-params-only destinations. **Planned refinement for P2/P3**: let FREEZE/REVERSE be
+  mod destinations too, not just the §5 continuous params.
+
+**Grain-engine vocabulary — planned refinements for `mist_core` (all original DSP, just informed
+by these parameter *names*, not any copied code):**
+- `grain rev-ratio` — Reverse becomes a **probability ratio** (some % of spawned grains play
+  reversed) instead of MIST's current binary on/off toggle. Small, clean change to `v2_set`
+  "reverse" handling + `grain_t` (store direction per-grain, chosen by `randf() < ratio`).
+- `grain pos-rnd` / `grain size-rnd` as **separate** knobs — MIST's current single BLUR knob
+  conflates position jitter, pitch jitter, and size variance into one control. Splitting is a
+  bigger param-surface change (needs a spare knob slot or page-2 placement) — defer to P2 when
+  the page-2 mod-matrix layout is being designed anyway.
+- `grain size-exp` — an exponential curve option on SIZE's spawn-to-spawn variance, vs. linear.
+  Cheap: one `powf()` call in the grain-size-jitter math.
+- `window bias` / `window fold` / `window morph` — richer than MIST's SPIKE+AMOUNT pair (separate
+  attack sharpness + decay roundness). A unified "morph" single-knob window family is a bigger
+  DSP redesign — worth prototyping in `mist_render.py` offline first before touching the C core,
+  same validate-by-ear-first discipline as everything else in this doc.
+- `PitchEnvelope` (`pitch start-curve` / `pitch end-curve` / `pitch center`) — pitch shaped across
+  a grain's lifetime via a curve, instead of MIST's current static per-grain pitch. Interesting
+  but lower priority — it's a per-grain-voice feature, more P2/P3 scope than a quick fix.
+- `GrainVisualiser` — independent validation that a dedicated grain-scope UI (what P1's
+  `ui/canvas.js` attempts) is the right instinct, not scope creep.
+
+**Priority for next pass on `mist_core`:** rev-ratio and size-exp are both small, contained,
+high-value changes. The rest (split jitter knobs, window morph redesign, pitch envelope) wait
+for the P2 mod-matrix work, since they either need new UI surface or are bigger DSP changes
+that deserve their own offline-reference validation pass first.
 ```
