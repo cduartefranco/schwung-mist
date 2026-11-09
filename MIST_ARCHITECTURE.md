@@ -402,6 +402,22 @@ flat-len / start-curve / end-curve. Every MAP slot = dest + min + max (+ live va
 - **Listening tool:** `tools/mist_wav.py` renders WAVs through the *real* `dsp/mist.c`
   (128-frame blocks @44.1k, like the host) → `~/Desktop/MIST renders/`. Use it before shipping.
 
+### 13.1c Done — v0.5.0 quality pass (measured with `tests/quality.py`)
+| metric | v0.4.0 | v0.5.0 |
+|---|---|---|
+| aliasing (6 kHz @ +24 st vs 1 kHz) | −26.6 dB | **−46.2 dB** |
+| stereo separation (L 500 / R 1500 Hz) | 0 dB (mono) | **23 dB** |
+| sine envelope ripple, pitch 0 / −12 | 11.7 / 36.1 % | 11.7 / 36.1 % |
+| comb ripple on noise (floor 0.8 dB) | 0.83–1.08 dB | same |
+- **Anti-aliasing:** 4 band-limited ring copies (4th-order Butterworth, fc = 14.3 kHz/2^L);
+  a grain with |ratio| r reads level ceil(log2(r/1.4)).
+- **True stereo:** stereo input rings + stereo feedback taps (loop gain unchanged, tails identical).
+- **Hypothesis disproved:** "phasey comb from grains reading the same spot" — no comb ripple
+  measurable on noise. SCATTER kept as a creative pos-rnd control, **default 0** (it raises
+  tonal level wobble 11.7 → 34 %).
+- Density max 200; 96 voices; CPU self-timing logged on instance destroy (avg/max µs per block).
+- ~12 MB RAM per instance (5 levels × 2 ch × 1 MB + 2 MB feedback).
+
 ### 13.2 Next — generic modulator framework (do before the 2nd modulator)
 Refactor `atrg` into `mod_t { type; float p[]; slot_t slots[N]; float out; }` with an
 `eval_block()` per type, evaluated **once per block** in a fixed order

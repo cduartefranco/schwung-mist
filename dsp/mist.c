@@ -31,6 +31,7 @@
 #include <strings.h>
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "audio_fx_api_v1.h"
 
@@ -38,7 +39,9 @@
 #define TWO_PI      6.283185307179586f
 #define RINGLEN     262144           /* 2^18 samples ~5.94s @44.1k — input+feedback ring */
 #define RMASK       (RINGLEN - 1)
-#define MAX_GRAINS  64                /* bounded voice pool — no malloc in process */
+#define MAX_GRAINS  96                /* bounded voice pool — no malloc in process */
+#define MIP_LEVELS  5                 /* ring + 4 band-limited copies (anti-alias for pitch-up) */
+#define SCATTER_MS  40.0f             /* SCATTER=1 -> +-40 ms grain position spread */
 #define WET_MAKEUP  2.37f             /* +7.5 dB */
 #define WLEN        1024              /* grain window lookup table (rebuilt on SPIKE/AMOUNT change) */
 #define MAX_SIZE_MS 500.0f
@@ -61,6 +64,7 @@ enum {
     P_TRG1_DEST, P_TRG1_MIN, P_TRG1_MAX,
     P_TRG2_DEST, P_TRG2_MIN, P_TRG2_MAX,
     P_DENSITY, P_SPREAD, P_GMODE, P_EU_PATTERN, P_EU_RATE, P_EU_ROT, P_EU_BURST, P_EU_JITTER,
+    P_SCATTER,
     P_COUNT
 };
 
@@ -75,10 +79,10 @@ typedef struct {
 /* Modulation destinations (index into this list = the DEST enum value).
    Entry 0 is "Off". Everything else is a continuous base param. */
 /* append-only: saved presets store the index */
-#define DEST_OPTS "Off|Size|Amount|Spike|Blur|Pitch|FB Pre|FB Post|Mix|Width|Vol|Density|Spread"
+#define DEST_OPTS "Off|Size|Amount|Spike|Blur|Pitch|FB Pre|FB Post|Mix|Width|Vol|Density|Spread|Scatter"
 static const int g_dest_param[] = {
     -1, P_SIZE, P_AMOUNT, P_SPIKE, P_BLUR, P_PITCH, P_FB_PRE, P_FB_POST, P_MIX, P_WIDTH, P_VOL,
-    P_DENSITY, P_SPREAD
+    P_DENSITY, P_SPREAD, P_SCATTER
 };
 
 /* Euclidean grain-trigger variants (pulses k over steps n; Toussaint's classics).
@@ -120,7 +124,7 @@ static const pdef_t g_params[P_COUNT] = {
     [P_TRG2_MIN]  = {"trg2_min",  "T2 Min", PT_FLOAT, -1, 1,   0.00f, 0.01f, NULL, NULL},
     [P_TRG2_MAX]  = {"trg2_max",  "T2 Max", PT_FLOAT, -1, 1,  -0.30f, 0.01f, NULL, NULL},
     /* grain stream: density (= Simplos TRIGGER, ref default 22/s) + euclidean rhythm mode */
-    [P_DENSITY]   = {"density",  "Density", PT_FLOAT, 1, 100,  22,    0.5f,  "/s", NULL},
+    [P_DENSITY]   = {"density",  "Density", PT_FLOAT, 1, 200,  22,    0.5f,  "/s", NULL},
     [P_SPREAD]    = {"spread",   "Spread",  PT_FLOAT, 0, 1,    0.70f, 0.01f, NULL, NULL},
     [P_GMODE]     = {"gmode",    "Mode",    PT_ENUM,  0, 1,    0, 1, NULL, "Free|Euclid"},
     [P_EU_PATTERN]= {"eu_pattern","Pattern",PT_ENUM,  0, 16,   0, 1, NULL, EU_OPTS},
@@ -128,6 +132,10 @@ static const pdef_t g_params[P_COUNT] = {
     [P_EU_ROT]    = {"eu_rot",   "Rotate",  PT_INT,   0, 15,   0, 1, NULL, NULL},
     [P_EU_BURST]  = {"eu_burst", "Burst",   PT_INT,   1, 8,    1, 1, NULL, NULL},
     [P_EU_JITTER] = {"eu_jitter","Jitter",  PT_FLOAT, 0, 1,    0.05f, 0.01f, NULL, NULL},
+    /* creative position randomness (Stranular pos-rnd): +-SCATTER_MS grain position +
+       looser free-mode timing. Default 0: measured (tests/quality.py) no comb filtering
+       to fix, and on tonal input it adds level wobble (11.7 -> 34 % at pitch 0). */
+    [P_SCATTER]   = {"scatter",  "Scatter", PT_FLOAT, 0, 1,    0.00f, 0.01f, NULL, NULL},
 };
 
 static const int g_slot_params[TRG_SLOTS][3] = {
@@ -204,6 +212,7 @@ typedef struct {
     float  ratio;        /* pitch playback rate */
     float  gl, gr;        /* equal-power pan gains (computed once at spawn) */
     float  wstep;         /* window-table increment per sample = WLEN / len */
+    int    lvl;           /* which band-limited ring copy to read (by |ratio|) */
 } grain_t;
 
 /* audio trigger (mod-atrg) state */
@@ -221,8 +230,12 @@ typedef struct {
 
     float pv[P_COUNT];      /* base (knob) values, in each param's own units */
 
-    /* ring buffer: holds input + feedback (what grains read from) */
-    float *ring;
+    /* STEREO input+feedback rings; mip[c][0] is the full-band ring, mip[c][1..4]
+       are 4th-order-Butterworth band-limited copies (fc = 14.3 kHz / 2^L) written
+       in parallel. A grain pitched up by r reads the copy whose band x r stays
+       under ~14 kHz -> no aliasing (v0.4: a 6 kHz tone at +24 st folded to 20 kHz). */
+    float *mip[2][MIP_LEVELS];
+    float  bq[2][MIP_LEVELS][2][4];   /* [ch][level][stage] x1 x2 y1 y2 */
     unsigned wr;
 
     /* grain voice pool */
@@ -249,8 +262,8 @@ typedef struct {
        through the grains (re-granulation loss ~0.5), which MK=1.7 makes up for.
        (v0.2.x-0.3.0 tapped the raw input ring instead — no loss, so with MK the
        loop barely decayed: 18 s+ tails = the "out of control" bug.) */
-    float *wet;
-    float dc_x, dc_y, damp;
+    float *wet[2];                   /* stereo feedback tap rings */
+    float dc_x[2], dc_y[2], damp[2];
     float lp_x1[2], lp_x2[2], lp_y1[2], lp_y2[2];   /* 14 kHz 2-pole output LP */
 
     /* smoothed feedback delays — SIZE/PITCH/BLUR/FB TIME can move per block under
@@ -259,7 +272,27 @@ typedef struct {
     int   gd_init;
 
     atrg_t trg;
+
+    /* CPU stats (process_block wall time), logged on destroy (not in the RT path) */
+    double cpu_sum_us; float cpu_max_us; long cpu_n;
 } mist_t;
+
+/* mip filter coefficients: [level][stage] b0 b1 b2 a1 a2 (shared, built once) */
+static float g_mip_c[MIP_LEVELS][2][5];
+static int   g_mip_ready = 0;
+static void build_mip_coefs(void) {
+    const float Qs[2] = {0.54119610f, 1.30656296f};          /* 4th-order Butterworth */
+    for (int L = 1; L < MIP_LEVELS; L++) {
+        float fc = 14300.0f / (float)(1 << L);
+        float K = tanf((float)M_PI * fc / SR);
+        for (int st = 0; st < 2; st++) {
+            float Q = Qs[st], N = 1.0f / (1.0f + K / Q + K * K);
+            g_mip_c[L][st][0] = K * K * N; g_mip_c[L][st][1] = 2.0f * K * K * N; g_mip_c[L][st][2] = K * K * N;
+            g_mip_c[L][st][3] = 2.0f * (K * K - 1.0f) * N; g_mip_c[L][st][4] = (1.0f - K / Q + K * K) * N;
+        }
+    }
+    g_mip_ready = 1;
+}
 
 /* ---- helpers ---- */
 static void v2_log(const char *m) {
@@ -285,9 +318,17 @@ static void *v2_create(const char *module_dir, const char *config_json) {
     if (!e) { v2_log("alloc failed"); return NULL; }
     if (module_dir) strncpy(e->module_dir, module_dir, sizeof(e->module_dir) - 1);
 
-    e->ring = (float *)calloc(RINGLEN, sizeof(float));
-    e->wet  = (float *)calloc(RINGLEN, sizeof(float));
-    if (!e->ring || !e->wet) { v2_log("ring alloc failed"); free(e->ring); free(e->wet); free(e); return NULL; }
+    int ok = 1;
+    for (int c = 0; c < 2; c++) {
+        for (int L = 0; L < MIP_LEVELS; L++) ok &= (e->mip[c][L] = (float *)calloc(RINGLEN, sizeof(float))) != NULL;
+        ok &= (e->wet[c] = (float *)calloc(RINGLEN, sizeof(float))) != NULL;
+    }
+    if (!ok) {
+        v2_log("ring alloc failed");
+        for (int c = 0; c < 2; c++) { for (int L = 0; L < MIP_LEVELS; L++) free(e->mip[c][L]); free(e->wet[c]); }
+        free(e); return NULL;
+    }
+    if (!g_mip_ready) build_mip_coefs();
 
     for (int i = 0; i < P_COUNT; i++) e->pv[i] = g_params[i].def;
     e->rng = 0xC0FFEEu;
@@ -296,14 +337,18 @@ static void *v2_create(const char *module_dir, const char *config_json) {
     e->win_spike = e->win_amount = -1.0f;    /* force first window build */
     e->eu_step = -1;
 
-    v2_log("instance created (v0.4 density+euclid)");
+    v2_log("instance created (v0.5 stereo+antialias)");
     return e;
 }
 
 static void v2_destroy(void *inst) {
     mist_t *e = (mist_t *)inst; if (!e) return;
-    free(e->ring); free(e->wet); free(e);
-    v2_log("instance destroyed");
+    char m[160];
+    snprintf(m, sizeof(m), "instance destroyed — cpu per 128-frame block: avg %.0f us, max %.0f us (budget ~2900 us) over %ld blocks",
+             e->cpu_n ? e->cpu_sum_us / (double)e->cpu_n : 0.0, e->cpu_max_us, e->cpu_n);
+    for (int c = 0; c < 2; c++) { for (int L = 0; L < MIP_LEVELS; L++) free(e->mip[c][L]); free(e->wet[c]); }
+    free(e);
+    v2_log(m);
 }
 
 /* audio trigger: per-sample detector + envelope. x = dry input peak (linear). */
@@ -349,15 +394,19 @@ static void build_window(mist_t *e, float spike, float amount) {
 }
 
 static void spawn_grain(mist_t *e, float size_n, float grain_delay, float pitch,
-                        float blur, int reverse, float spread) {
+                        float blur, int reverse, float spread, float scatter_n) {
     for (int v = 0; v < MAX_GRAINS; v++) {
         grain_t *g = &e->grains[v];
         if (g->active) continue;
         g->active = 1; g->age = 0.0f; g->len = size_n;
         g->wstep = (float)WLEN / size_n;
         float st = pitch + randf(&e->rng) * 12.0f * blur;
-        g->ratio = powf(2.0f, st / 12.0f) * (reverse ? -1.0f : 1.0f);
-        float posjit = randf(&e->rng) * blur * size_n;
+        float a = powf(2.0f, st / 12.0f);
+        g->ratio = a * (reverse ? -1.0f : 1.0f);
+        /* band-limited copy: level L keeps fc_L x |ratio| under ~14-20 kHz */
+        g->lvl = a <= 1.4f ? 0 : (int)ceilf(log2f(a / 1.4f));
+        if (g->lvl >= MIP_LEVELS) g->lvl = MIP_LEVELS - 1;
+        float posjit = randf(&e->rng) * (blur * size_n + scatter_n);
         g->read_pos = (float)e->wr - grain_delay + posjit;
         float pan = randf(&e->rng) * spread;
         g->gl = sqrtf(0.5f * (1.0f - pan)); g->gr = sqrtf(0.5f * (1.0f + pan));
@@ -368,7 +417,8 @@ static void spawn_grain(mist_t *e, float size_n, float grain_delay, float pitch,
 
 static void v2_process(void *inst, int16_t *io, int frames) {
     mist_t *e = (mist_t *)inst;
-    if (!e || !e->ring || !e->wet) return;
+    if (!e || !e->mip[0][0]) return;
+    struct timespec t_0; clock_gettime(CLOCK_MONOTONIC, &t_0);
 
     /* ---- modulation (control rate: once per block) ---- */
     float pe[P_COUNT];                       /* effective values this block */
@@ -397,7 +447,9 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     const float in_gain = powf(10.0f, e->pv[P_IN_GAIN] / 20.0f);
 
     const float size_n  = clampf(p_size, MIN_SIZE_MS, MAX_SIZE_MS) * 0.001f * SR;
-    const float density = clampf(pe[P_DENSITY], 1.0f, 100.0f);      /* grains / s (ref) */
+    const float density = clampf(pe[P_DENSITY], 1.0f, 200.0f);      /* grains / s (ref) */
+    const float scatter_n = pe[P_SCATTER] * SCATTER_MS * 0.001f * SR;
+    const float free_jit  = 0.15f + 0.35f * pe[P_SCATTER];          /* onset humanize +- */
     const float grain_spacing = SR / density;
     const float spread  = pe[P_SPREAD];
 
@@ -427,7 +479,8 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     const float ratio_max = powf(2.0f, fabsf(p_pitch) / 12.0f) * (1.0f + p_blur);
     /* max reach back into a ring: grains read up to grain_delay + size + jitter */
     const float max_d = (float)RINGLEN - 3.0f * MAX_SIZE_MS * 0.001f * SR - 1024.0f;
-    const float gd_target = fminf((float)((unsigned)(size_n * fmaxf(1.0f, ratio_max)) + 256), max_d);
+    /* + scatter reach so a forward-jittered grain never reads past the write head */
+    const float gd_target = fminf((float)((unsigned)(size_n * fmaxf(1.0f, ratio_max) + scatter_n) + 256), max_d);
     const float pd_target = e->pv[P_FB_TIME] > 0.0f
                           ? fminf(fmaxf(e->pv[P_FB_TIME] * 0.001f * SR, 257.0f), max_d) : gd_target;
     if (!e->gd_init) { e->gd_s = gd_target; e->pd_s = pd_target; e->gd_init = 1; }
@@ -458,7 +511,7 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     for (int n = 0; n < frames; n++) {
         float xL = io[n * 2]     / 32768.0f;
         float xR = io[n * 2 + 1] / 32768.0f;
-        float xin = 0.5f * (xL + xR) * in_gain;
+        float xin[2] = {xL * in_gain, xR * in_gain};
 
         atrg_tick(&e->trg, fmaxf(fabsf(xL), fabsf(xR)), trg_thr, trg_rel,
                   trg_dec, trg_scl, trg_atk, trg_hold);
@@ -468,13 +521,24 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         const float grain_delay = e->gd_s;
         const unsigned idx = e->wr;
 
-        /* --- feedback: delayed, already-processed WET grain output (see struct note) --- */
-        float fb_in = 0.0f;
-        if (p_fb_pre  > 0.0f) fb_in += p_fb_pre  * MK * read_cubic(e->wet, (float)idx - grain_delay);
-        if (p_fb_post > 0.0f) fb_in += p_fb_post * MK * read_cubic(e->wet, (float)idx - e->pd_s);
-
-        float write_val = p_freeze ? 0.0f : xin;
-        e->ring[idx] = write_val + fb_in;
+        /* --- per channel: feedback (delayed, already-processed WET grain output, see
+               struct note) + input -> full-band ring + band-limited mip copies --- */
+        for (int c = 0; c < 2; c++) {
+            float fb_in = 0.0f;
+            if (p_fb_pre  > 0.0f) fb_in += p_fb_pre  * MK * read_cubic(e->wet[c], (float)idx - grain_delay);
+            if (p_fb_post > 0.0f) fb_in += p_fb_post * MK * read_cubic(e->wet[c], (float)idx - e->pd_s);
+            float v = (p_freeze ? 0.0f : xin[c]) + fb_in;
+            e->mip[c][0][idx] = v;
+            for (int L = 1; L < MIP_LEVELS; L++) {
+                float x = v;
+                for (int st = 0; st < 2; st++) {
+                    const float *k = g_mip_c[L][st]; float *z = e->bq[c][L][st];
+                    float y = k[0] * x + k[1] * z[0] + k[2] * z[1] - k[3] * z[2] - k[4] * z[3];
+                    z[1] = z[0]; z[0] = x; z[3] = z[2]; z[2] = y; x = y;
+                }
+                e->mip[c][L][idx] = x;
+            }
+        }
         e->wr = (idx + 1) & RMASK;
 
         /* --- grain scheduling --- */
@@ -482,8 +546,8 @@ static void v2_process(void *inst, int16_t *io, int frames) {
             /* free: uniform stream at DENSITY, +-15 % humanize (ref) */
             e->next_onset -= 1.0f;
             if (e->next_onset <= 0.0f) {
-                e->next_onset = grain_spacing * (0.85f + 0.3f * ((randf(&e->rng) + 1.0f) * 0.5f));
-                spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread);
+                e->next_onset = grain_spacing * (1.0f + free_jit * randf(&e->rng));
+                spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread, scatter_n);
             }
         } else {
             /* euclid: tempo-synced steps; a pulse step fires BURST grains spaced by
@@ -506,7 +570,7 @@ static void v2_process(void *inst, int16_t *io, int frames) {
             if (e->burst_left > 0) {
                 e->burst_next -= 1.0f;
                 if (e->burst_next <= 0.0f) {
-                    spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread);
+                    spawn_grain(e, size_n, grain_delay, p_pitch, p_blur, p_reverse, spread, scatter_n);
                     e->burst_left--; e->burst_next = burst_gap;
                 }
             }
@@ -520,21 +584,25 @@ static void v2_process(void *inst, int16_t *io, int frames) {
             float wp = g->age * g->wstep;                   /* window LUT, linear interp */
             int   wi = (int)wp; if (wi >= WLEN) wi = WLEN - 1;
             float w  = e->win[wi] + (e->win[wi + 1] - e->win[wi]) * (wp - (float)wi);
-            float s = read_cubic(e->ring, g->read_pos) * w * gnorm;
-            gl += s * g->gl;
-            gr += s * g->gr;
+            const float wg = w * gnorm;
+            gl += read_cubic(e->mip[0][g->lvl], g->read_pos) * wg * g->gl;    /* true stereo */
+            gr += read_cubic(e->mip[1][g->lvl], g->read_pos) * wg * g->gr;
 
             g->read_pos += g->ratio;
             g->age += 1.0f;
             if (g->age >= g->len) g->active = 0;
         }
 
-        /* wet mono -> DC block (R=.995) -> damp LP -> soft limit = the feedback tap */
+        /* wet (per channel) -> DC block (R=.995) -> damp LP -> soft limit = feedback tap.
+           A centred grain puts 0.707*s on each channel = exactly the v0.4 mono tap
+           0.5*(gl+gr), so loop gain (tail length) is unchanged. */
         {
-            float wm = 0.5f * (gl + gr);
-            float y = wm - e->dc_x + 0.995f * e->dc_y; e->dc_x = wm; e->dc_y = y;
-            e->damp = dampA * e->damp + (1.0f - dampA) * y;
-            e->wet[idx] = soft_limit(e->damp, 0.9f);
+            float wv[2] = {gl, gr};
+            for (int c = 0; c < 2; c++) {
+                float y = wv[c] - e->dc_x[c] + 0.995f * e->dc_y[c]; e->dc_x[c] = wv[c]; e->dc_y[c] = y;
+                e->damp[c] = dampA * e->damp[c] + (1.0f - dampA) * y;
+                e->wet[c][idx] = soft_limit(e->damp[c], 0.9f);
+            }
         }
 
         /* width (mid/side) on the wet grain sum */
@@ -567,6 +635,10 @@ static void v2_process(void *inst, int16_t *io, int frames) {
         io[n * 2]     = (int16_t)(clampf(oL, -1.0f, 1.0f) * 32767.0f);
         io[n * 2 + 1] = (int16_t)(clampf(oR, -1.0f, 1.0f) * 32767.0f);
     }
+
+    struct timespec t_1; clock_gettime(CLOCK_MONOTONIC, &t_1);
+    float us = (float)((t_1.tv_sec - t_0.tv_sec) * 1e6 + (t_1.tv_nsec - t_0.tv_nsec) * 1e-3);
+    e->cpu_sum_us += us; e->cpu_n++; if (us > e->cpu_max_us) e->cpu_max_us = us;
 }
 
 static int find_param(const char *key) {
