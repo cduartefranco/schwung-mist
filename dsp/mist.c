@@ -54,7 +54,7 @@ enum { PT_FLOAT, PT_INT, PT_ENUM };
 
 enum {
     P_SIZE, P_AMOUNT, P_SPIKE, P_BLUR, P_PITCH, P_FB_PRE, P_FB_POST, P_MIX,
-    P_WIDTH, P_VOL, P_IN_GAIN, P_FREEZE, P_REVERSE,
+    P_WIDTH, P_VOL, P_IN_GAIN, P_FB_TIME, P_FREEZE, P_REVERSE,
     P_TRG_THRESH, P_TRG_RETURN, P_TRG_SCALE,
     P_TRG1_DEST, P_TRG1_MIN, P_TRG1_MAX,
     P_TRG2_DEST, P_TRG2_MIN, P_TRG2_MAX,
@@ -86,10 +86,12 @@ static const pdef_t g_params[P_COUNT] = {
     [P_PITCH]     = {"pitch",   "Pitch",   PT_FLOAT, -36, 36, -12,   0.1f,  "st", NULL},
     [P_FB_PRE]    = {"fb_pre",  "FB Pre",  PT_FLOAT, 0, 1,    0.00f, 0.01f, NULL, NULL},
     [P_FB_POST]   = {"fb_post", "FB Post", PT_FLOAT, 0, 1,    0.45f, 0.01f, NULL, NULL},
-    [P_MIX]       = {"mix",     "Mix",     PT_FLOAT, 0, 1,    1.00f, 0.01f, NULL, NULL},
+    [P_MIX]       = {"mix",     "Mix",     PT_FLOAT, 0, 1,    0.50f, 0.01f, NULL, NULL},
     [P_WIDTH]     = {"width",   "Width",   PT_FLOAT, 0, 1,    0.60f, 0.01f, NULL, NULL},
     [P_VOL]       = {"vol",     "Vol",     PT_FLOAT, 0, 1.5f, 0.90f, 0.01f, NULL, NULL},
-    [P_IN_GAIN]   = {"in_gain", "In Gain", PT_FLOAT, -12, 24, 6.0f,  0.5f,  "dB", NULL},
+    [P_IN_GAIN]   = {"in_gain", "In Gain", PT_FLOAT, -12, 24, 0.0f,  0.5f,  "dB", NULL},
+    /* 0 = tight/auto (post tap = one grain-delay, like FB Pre); >0 = echo time for FB Post */
+    [P_FB_TIME]   = {"fb_time", "FB Time", PT_INT,   0, 2000, 0,     1,    "ms", NULL},
     [P_FREEZE]    = {"freeze",  "Freeze",  PT_ENUM,  0, 1,    0, 1, NULL, "off|on"},
     [P_REVERSE]   = {"reverse", "Reverse", PT_ENUM,  0, 1,    0, 1, NULL, "off|on"},
     /* audio trigger (mod-atrg) */
@@ -199,13 +201,19 @@ typedef struct {
     float   next_onset;     /* samples until the next grain spawn (control-rate accum) */
     uint32_t rng;
 
-    /* feedback path state (pre + post taps, each: DC blocker + damp LP) */
-    float dcy_pre, damp_pre;
-    float dcy_post, damp_post;
+    /* feedback path (= the reference engine, tools/mist_render.py): the WET grain
+       output -> DC block -> damp LP -> soft limit is stored in its own ring, and
+       the pre/post taps read THAT back into the input ring. Every pass goes back
+       through the grains (re-granulation loss ~0.5), which MK=1.7 makes up for.
+       (v0.2.x-0.3.0 tapped the raw input ring instead — no loss, so with MK the
+       loop barely decayed: 18 s+ tails = the "out of control" bug.) */
+    float *wet;
+    float dc_x, dc_y, damp;
+    float lp_x1[2], lp_x2[2], lp_y1[2], lp_y2[2];   /* 14 kHz 2-pole output LP */
 
-    /* smoothed feedback delay — SIZE/PITCH/BLUR can now move per block under
-       modulation, so the tap position glides instead of jumping (no clicks) */
-    float gd_s;
+    /* smoothed feedback delays — SIZE/PITCH/BLUR/FB TIME can move per block under
+       modulation, so tap positions glide instead of jumping (no clicks) */
+    float gd_s, pd_s;
     int   gd_init;
 
     atrg_t trg;
@@ -236,20 +244,21 @@ static void *v2_create(const char *module_dir, const char *config_json) {
     if (module_dir) strncpy(e->module_dir, module_dir, sizeof(e->module_dir) - 1);
 
     e->ring = (float *)calloc(RINGLEN, sizeof(float));
-    if (!e->ring) { v2_log("ring alloc failed"); free(e); return NULL; }
+    e->wet  = (float *)calloc(RINGLEN, sizeof(float));
+    if (!e->ring || !e->wet) { v2_log("ring alloc failed"); free(e->ring); free(e->wet); free(e); return NULL; }
 
     for (int i = 0; i < P_COUNT; i++) e->pv[i] = g_params[i].def;
     e->rng = 0xC0FFEEu;
     e->next_onset = 0.0f;
     e->trg.armed = 1;
 
-    v2_log("instance created (v0.3 atrg)");
+    v2_log("instance created (v0.3.1 ref-feedback)");
     return e;
 }
 
 static void v2_destroy(void *inst) {
     mist_t *e = (mist_t *)inst; if (!e) return;
-    free(e->ring); free(e);
+    free(e->ring); free(e->wet); free(e);
     v2_log("instance destroyed");
 }
 
@@ -280,7 +289,7 @@ static inline void atrg_tick(atrg_t *t, float x, float thr, float rel_det,
 
 static void v2_process(void *inst, int16_t *io, int frames) {
     mist_t *e = (mist_t *)inst;
-    if (!e || !e->ring) return;
+    if (!e || !e->ring || !e->wet) return;
 
     /* ---- modulation (control rate: once per block) ---- */
     float pe[P_COUNT];                       /* effective values this block */
@@ -317,16 +326,22 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     /* adaptive feedback delay: TRACKS grain size (the Simplos signature) —
        pre = tight (grain_delay), post = looser (4x), both still adapt with SIZE */
     const float ratio_max = powf(2.0f, fabsf(p_pitch) / 12.0f) * (1.0f + p_blur);
-    const float gd_target = (float)((unsigned)(size_n * fmaxf(1.0f, ratio_max)) + 64);
-    if (!e->gd_init) { e->gd_s = gd_target; e->gd_init = 1; }
+    /* max reach back into a ring: grains read up to grain_delay + size + jitter */
+    const float max_d = (float)RINGLEN - 3.0f * MAX_SIZE_MS * 0.001f * SR - 1024.0f;
+    const float gd_target = fminf((float)((unsigned)(size_n * fmaxf(1.0f, ratio_max)) + 256), max_d);
+    const float pd_target = e->pv[P_FB_TIME] > 0.0f
+                          ? fminf(fmaxf(e->pv[P_FB_TIME] * 0.001f * SR, 257.0f), max_d) : gd_target;
+    if (!e->gd_init) { e->gd_s = gd_target; e->pd_s = pd_target; e->gd_init = 1; }
     const float gd_k = 1.0f - expf(-1.0f / (0.030f * SR));     /* ~30 ms glide */
 
-    const float damp_fc_pre  = 7000.0f;
-    const float damp_fc_post = 5500.0f;
-    const float dampB_pre  = 1.0f - expf(-TWO_PI * damp_fc_pre  / SR);
-    const float dampB_post = 1.0f - expf(-TWO_PI * damp_fc_post / SR);
-    const float dcB = 1.0f - expf(-TWO_PI * 20.0f / SR);
+    const float dampA = expf(-TWO_PI * 6500.0f / SR);          /* ref damp_hz 6500 */
     const float MK = 1.7f;                     /* feedback make-up (re-granulation loss) */
+
+    /* 2-pole Butterworth LP @ 14 kHz (ref out_lp), bilinear */
+    const float lpK = tanf((float)M_PI * 14000.0f / SR), lpQ = 0.70710678f;
+    const float lpN = 1.0f / (1.0f + lpK / lpQ + lpK * lpK);
+    const float lb0 = lpK * lpK * lpN, lb1 = 2.0f * lb0, lb2 = lb0;
+    const float la1 = 2.0f * (lpK * lpK - 1.0f) * lpN, la2 = (1.0f - lpK / lpQ + lpK * lpK) * lpN;
 
     const float atk_n = fmaxf(1.0f, (0.02f + 0.33f * (1.0f - p_spike)) * size_n);
     const float dec_n = fmaxf(1.0f, size_n - atk_n);
@@ -353,29 +368,18 @@ static void v2_process(void *inst, int16_t *io, int frames) {
                   trg_dec, trg_scl, trg_atk, trg_hold);
 
         e->gd_s += gd_k * (gd_target - e->gd_s);
+        e->pd_s += gd_k * (pd_target - e->pd_s);
         const float grain_delay = e->gd_s;
-        const float post_delay  = grain_delay * 4.0f;
+        const unsigned idx = e->wr;
 
-        /* --- feedback taps: read pre/post delayed wet from the ring, process, write --- */
-        float rd_pre  = read_cubic(e->ring, (float)e->wr - grain_delay);
-        float rd_post = read_cubic(e->ring, (float)e->wr - post_delay);
-
-        e->damp_pre  += dampB_pre  * (rd_pre  - e->damp_pre);
-        e->damp_post += dampB_post * (rd_post - e->damp_post);
-        float wpre = e->damp_pre, wpost = e->damp_post;
-
-        /* DC blocker = subtract a slow one-pole lowpass estimate of the DC/sub */
-        e->dcy_pre  += dcB * (wpre  - e->dcy_pre);  wpre  -= e->dcy_pre;
-        e->dcy_post += dcB * (wpost - e->dcy_post); wpost -= e->dcy_post;
-
-        wpre  = soft_limit(wpre,  0.9f);
-        wpost = soft_limit(wpost, 0.9f);
-
-        float fb_in = p_fb_pre * MK * wpre + p_fb_post * MK * wpost;
+        /* --- feedback: delayed, already-processed WET grain output (see struct note) --- */
+        float fb_in = 0.0f;
+        if (p_fb_pre  > 0.0f) fb_in += p_fb_pre  * MK * read_cubic(e->wet, (float)idx - grain_delay);
+        if (p_fb_post > 0.0f) fb_in += p_fb_post * MK * read_cubic(e->wet, (float)idx - e->pd_s);
 
         float write_val = p_freeze ? 0.0f : xin;
-        e->ring[e->wr] = write_val + fb_in;
-        e->wr = (e->wr + 1) & RMASK;
+        e->ring[idx] = write_val + fb_in;
+        e->wr = (idx + 1) & RMASK;
 
         /* --- control-rate grain spawn (per-sample accumulator) --- */
         e->next_onset -= 1.0f;
@@ -420,13 +424,35 @@ static void v2_process(void *inst, int16_t *io, int frames) {
             if (g->age >= g->len) g->active = 0;
         }
 
+        /* wet mono -> DC block (R=.995) -> damp LP -> soft limit = the feedback tap */
+        {
+            float wm = 0.5f * (gl + gr);
+            float y = wm - e->dc_x + 0.995f * e->dc_y; e->dc_x = wm; e->dc_y = y;
+            e->damp = dampA * e->damp + (1.0f - dampA) * y;
+            e->wet[idx] = soft_limit(e->damp, 0.9f);
+        }
+
         /* width (mid/side) on the wet grain sum */
         float mid = 0.5f * (gl + gr);
         float side = 0.5f * (gl - gr) * (0.3f + 1.7f * p_width);
         float wL = mid + side, wR = mid - side;
 
-        float oL = (1.0f - p_mix) * xL + p_mix * wL;
-        float oR = (1.0f - p_mix) * xR + p_mix * wR;
+        {   /* 14 kHz LP on the WET only (ref out_lp; dry stays untouched on a master bus) */
+            float in2[2] = {wL, wR};
+            for (int c = 0; c < 2; c++) {
+                float y = lb0 * in2[c] + lb1 * e->lp_x1[c] + lb2 * e->lp_x2[c]
+                        - la1 * e->lp_y1[c] - la2 * e->lp_y2[c];
+                e->lp_x2[c] = e->lp_x1[c]; e->lp_x1[c] = in2[c];
+                e->lp_y2[c] = e->lp_y1[c]; e->lp_y1[c] = y; in2[c] = y;
+            }
+            wL = in2[0]; wR = in2[1];
+        }
+        /* dry/wet: both at unity up to 50 %, then crossfade (0 % and 100 % unchanged) —
+           inserting MIST on a master bus doesn't drop the level */
+        const float dry_g = fminf(1.0f, 2.0f * (1.0f - p_mix));
+        const float wet_g = fminf(1.0f, 2.0f * p_mix);
+        float oL = dry_g * xL + wet_g * wL;
+        float oR = dry_g * xR + wet_g * wR;
         oL *= p_vol; oR *= p_vol;
         oL = soft_limit(oL, 0.7f); oR = soft_limit(oR, 0.7f);
 
