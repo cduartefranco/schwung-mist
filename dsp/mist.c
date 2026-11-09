@@ -162,6 +162,14 @@ static void v2_process(void *inst, int16_t *io, int frames) {
     mist_t *e = (mist_t *)inst;
     if (!e || !e->ring) return;
 
+    /* DIAGNOSTIC WIRING TEST — unconditional hard mute, bypassing all DSP.
+     * If this slot is genuinely in the live audio path, engaging MIST goes
+     * dead silent. If audio still comes through, this module isn't actually
+     * being called for real-time processing (a shim/host wiring issue, not
+     * a DSP/tuning issue). Remove once wiring is confirmed. */
+    for (int n = 0; n < frames; n++) { io[n * 2] = 0; io[n * 2 + 1] = 0; }
+    return;
+
     const float size_n  = clampf(e->p_size, MIN_SIZE_MS, MAX_SIZE_MS) * 0.001f * SR;
     /* DENSITY is implicit from SIZE on the base page (P1 has no separate density
        knob yet — see MIST_ARCHITECTURE §5 page-2 note); target ~60% grain overlap. */
